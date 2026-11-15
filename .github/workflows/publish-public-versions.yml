@@ -1,0 +1,109 @@
+name: Publish InkWords public versions
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-public-versions.yml]
+permissions:
+  contents: write
+concurrency:
+  group: publish-inkwords-public-versions
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify existing packages and publish the two public versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os, json, hashlib, urllib.request, urllib.error
+          from pathlib import Path
+          repo = "WarlockDi/InkWords-X4Pro"
+          token = os.environ["GH_TOKEN"]
+          def api(path, method="GET", data=None, raw=None, content_type="application/json"):
+              url = path if path.startswith("https://") else "https://api.github.com/repos/" + repo + path
+              body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)
+              req = urllib.request.Request(url, data=body, method=method, headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json", "Content-Type": content_type, "X-GitHub-Api-Version": "2022-11-28"})
+              with urllib.request.urlopen(req, timeout=90) as response:
+                  return json.load(response)
+          versions = [
+           ("1.4.6", "2d43d1079ec847db1630f0a3961ff0e8c4f5e874", "e0600b4c5032859afc72283dea0626000eacd4f7237fbab31f2d84a248904aa2", "4723fd2373ed40eca82c59772a0e00e23d62334ee7ca4a47bc1a6910e0d50b10"),
+           ("1.5.4", "bbe86b8ee9d98fb20024385d6b8bdd476107da16", "8208725248ba0c7e88bc1d57cb08608a3ad2d0c0a9e9a1a9ec3a60d58479fccd", "f8b52d58b1a9dffab04d4ca413eefc6c6bc8fc84768c2a7d31ee3c6f8b30335b")
+          ]
+          for version, commit, app_hash, zip_hash in versions:
+              tag = "v" + version
+              root = "https://github.com/" + repo + "/blob/" + tag + "/"
+              if version == "1.4.6":
+                  notes = """## 中文
+          补建上一公开版本的独立发布记录，程序未重新编译。
+          - 单文件安装，首次打开自动初始化原创示例词库。
+          - 七种练习模式、双向配对、自动拼写难度与本地间隔复习。
+          - 开放许可字体、源码、安装说明和上游致谢。
+          
+          ## English
+          Archived public baseline; the original app binary has not been rebuilt.
+          - Single-file installation with automatically initialized original demo cards.
+          - Seven practice modes, bidirectional matching, adaptive spelling and local spaced repetition.
+          - Open-licensed fonts, source, installation instructions and upstream credits.
+          """
+              else:
+                  notes = """## 中文
+          从 1.4.6 升级的累计更新。
+          - 优化答案反馈、配对和下一题响应，分段准备下一题并复用字形与排版。
+          - 先校验保存恢复日志，再显示反馈；异常退出后可恢复，避免重复计分。
+          - 改善词组间距与长词组换行。拼写答对只显示成功，答错显示正确拼写。
+          - 累计总结分段加载、可取消并缓存；保留原布局、词库和学习进度。
+          - 通过 3,000 次随机操作、6,000 题连续练习和保存故障模拟检查。电脑测试不能代表实机延迟、耗电或长期可靠性保证。
+          
+          ## English
+          Cumulative update from 1.4.6.
+          - Improved answer feedback, matching and Next using bounded prefetch and reusable layout/font caches.
+          - Verified recovery journals precede feedback; restart recovery avoids duplicate grading.
+          - Clear phrase spacing and word-aware wrapping; correct spelling shows success only, while mistakes show the reference.
+          - Incremental, cancellable and cached cumulative summaries. Existing layout, vocabulary and progress are preserved.
+          - Passed 3,000 randomized operations, 6,000 continuous questions and persistence fault simulations. Desktop tests are not hardware latency, power or endurance certification.
+          """
+              notes += """
+          ## 安装 / Installation
+          下载下面的 .xtapp 文件覆盖安装，无需安装中间版本，也不要卸载或重置进度。Public.zip 额外包含说明和许可证；Source code 是源码，不是安装包。
+          Install the .xtapp over your existing app. No intermediate versions, uninstall or progress reset are needed. Public.zip adds documentation/licenses; Source code archives are not installers.
+          
+          公开包含 20 条原创示例词卡，不是每日学习上限；不含个人完整词库和学习记录，已有词库继续沿用。
+          The public app includes 20 original demonstration cards, not a daily learning limit. Private libraries/records are excluded; existing local libraries are preserved.
+          
+          维护者 / Maintainer: **WarlockDi** · **e99866@outlook.com**
+          感谢 / Credits: Omer Faruk Inel (touch-licorice-apps), KFloyd.com / kycube (x4pro-emu), MemDeck, Anki / FSRS, Noto contributors and vocabulary resource authors. OpenAI Codex assisted development and testing.
+          """
+              notes += "\n[安装 / Installation](" + root + "INSTALL.md) · [词库 / Vocabulary](" + root + "docs/VOCABULARY.md) · [完整致谢与许可 / Credits and licenses](" + root + "THIRD_PARTY.md) · [测试 / Tests](" + root + "docs/TESTING.md)\n"
+              files = {}
+              for suffix, expected in [(".xtapp", app_hash), ("_Public.zip", zip_hash)]:
+                  name = "InkWords_" + version + suffix
+                  with urllib.request.urlopen("https://raw.githubusercontent.com/" + repo + "/" + commit + "/downloads/" + name, timeout=90) as response:
+                      payload = response.read()
+                  assert hashlib.sha256(payload).hexdigest() == expected, name
+                  files[name] = payload
+              files["SHA256SUMS.txt"] = (app_hash + "  InkWords_" + version + ".xtapp\n" + zip_hash + "  InkWords_" + version + "_Public.zip\n").encode()
+              releases = api("/releases?per_page=100")
+              matches = [r for r in releases if r["tag_name"] == tag]
+              assert len(matches) <= 1
+              if matches:
+                  release = matches[0]
+                  if not release["draft"]:
+                      assert all(any(a["name"] == n and a["size"] == len(p) for a in release["assets"]) for n,p in files.items())
+                      print("Already published:", release["html_url"])
+                      continue
+              else:
+                  release = api("/releases", "POST", {"tag_name": tag, "target_commitish": commit, "name": "墨词 InkWords " + version, "body": notes, "draft": True, "prerelease": False})
+              for name, payload in files.items():
+                  existing = next((a for a in release["assets"] if a["name"] == name), None)
+                  if existing:
+                      assert existing["size"] == len(payload), name
+                      continue
+                  api(release["upload_url"].split("{")[0] + "?name=" + name, "POST", raw=payload, content_type="application/octet-stream")
+              release = api("/releases/" + str(release["id"]), "PATCH", {"draft": False, "make_latest": "true" if version == "1.5.4" else "false"})
+              print("Published:", release["html_url"])
+          
+          PY
