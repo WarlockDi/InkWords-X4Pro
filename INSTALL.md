@@ -19,13 +19,15 @@
 
 初始化仅在没有现有词库目录时执行；先写词条，校验后最后写目录。写入失败时可检查存储卡后重开，已有词库不会被自动替换。
 
-示例库只有20条自行编写的词卡，不代表完整考试词库。可以转换并使用自己有权使用的数据。
+示例库只有20条自行编写的词卡，不代表完整考试词库，也不是学习数量上限。添加其他词书请看 **[词库获取、转换和导入教程](docs/VOCABULARY.md)**，其中包括保留原词库的合并方法。额外词库导入目前仍需电脑操作。
 
 ## English
 
 **Existing users:** download `InkWords_1.4.6.xtapp`, copy it to the reader, safely eject, and open it to install over the existing app. Do not uninstall or reset progress. Verify version 1.4.6 and WarlockDi in Settings → About.
 
 **First installation:** install the same single `.xtapp`. The 20-card demonstration library is initialized automatically on first launch, only when no existing catalogue is present. No separate AppFiles copy is required. Other dictionaries must be supplied by the user with appropriate rights.
+
+See [Getting vocabulary decks](docs/VOCABULARY.md) for source links, CSV conversion and safe catalogue merging; additional decks currently require a computer.
 
 ## 注意 / Notes
 

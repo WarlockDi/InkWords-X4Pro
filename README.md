@@ -6,7 +6,7 @@
 联系 / Contact: **e99866@outlook.com**  
 当前公开版 / Public version: **1.4.6**
 
-[下载并安装 / Download app](https://github.com/WarlockDi/InkWords-X4Pro/raw/refs/heads/main/downloads/InkWords_1.4.6.xtapp) · [安装说明 / Installation](INSTALL.md) · [来源与致谢 / Credits](THIRD_PARTY.md) · [作者与转载 / Authorship](AUTHORSHIP.md)
+[下载并安装 / Download app](https://github.com/WarlockDi/InkWords-X4Pro/raw/refs/heads/main/downloads/InkWords_1.4.6.xtapp) · [安装说明 / Installation](INSTALL.md) · [获取和导入词库 / Get decks](docs/VOCABULARY.md) · [来源与致谢 / Credits](THIRD_PARTY.md) · [贡献说明 / Contributors](CONTRIBUTORS.md) · [作者与转载 / Authorship](AUTHORSHIP.md)
 
 ## 中文
 
@@ -28,7 +28,7 @@
 
 下载并安装上方 `.xtapp` 即可；首次打开自动准备内置示例词库，不需要另行复制 AppFiles。已有完整词库和学习进度直接沿用，程序不会用示例库覆盖它们。详见 [INSTALL.md](INSTALL.md)。
 
-公开包提供20条自行编写的中英示例词卡，用于体验所有题型。个人版本使用过的108本词书及抓取例句不在此公开包中，原因见 [THIRD_PARTY.md](THIRD_PARTY.md)。这不影响你本机已有的词库。可用 `tools/import_csv.py` 转换自己有权使用的词表；不要把“公开可下载”当成“允许再分发”。
+公开包提供20条自行编写的中英示例词卡，用于体验所有题型，**不是只能学习20个词**。更多词库来源、下载、CSV转换和保留原词库的导入步骤，见 **[如何获取和导入词库](docs/VOCABULARY.md)**。个人版本使用过的108本词书及抓取例句不在此公开包中，原因见 [THIRD_PARTY.md](THIRD_PARTY.md)。这不影响你本机已有的词库。
 
 ### 运行预览
 
@@ -70,6 +70,8 @@ python tools/lualint55.py apps/inkwords/src/main.lua
 ```
 
 ## 感谢 / Acknowledgements
+
+**WarlockDi** 负责需求、交互决策、维护和实机反馈；**OpenAI Codex** 协助开发、排查问题、模拟测试、文档和发布准备。详见 [贡献与 AI 辅助说明 / Contributors and AI assistance](CONTRIBUTORS.md)。
 
 - **Omer Faruk Inel / omer-faruq-xteink** — [touch-licorice-apps v0.24.0](https://github.com/omer-faruq-xteink/touch-licorice-apps/tree/v0.24.0): Anki mini-app foundation, gamekit, Lua host documentation and packaging tools. MIT notices retained.
 - **KFloyd.com / kycube** — [x4pro-emu](https://github.com/kycube/x4pro-emu): upstream Licorice container/packer implementation. MIT notice retained.

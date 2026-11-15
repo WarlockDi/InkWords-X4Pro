@@ -7,7 +7,7 @@ import argparse,csv,hashlib
 p=argparse.ArgumentParser();p.add_argument('csv');p.add_argument('--name',required=True);p.add_argument('--output',required=True);a=p.parse_args()
 dest=Path(a.output)
 if dest.exists():p.error('Choose a new output directory; existing libraries will not be overwritten.')
-rows=list(csv.DictReader(Path(a.csv).read_text(encoding='utf-8-sig').splitlines()))
+with Path(a.csv).open(encoding='utf-8-sig',newline='') as f:rows=list(csv.DictReader(f))
 assert rows and all(r.get('word') and r.get('meaning') for r in rows),'word and meaning are required'
 assert not any(c in a.name for c in '\t\r\n'),'Invalid name'
 key='iw'+hashlib.sha256(a.name.encode()).hexdigest()[:10]
