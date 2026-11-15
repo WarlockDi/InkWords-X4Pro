@@ -209,6 +209,7 @@ local ROW_H, ROWS = 84, 7
 
 local settings = { new_per_day = 15 }
 local decks = {}                       -- { key, name, source = 'package' | 'storage' | 'tsv' | 'own', file, cards, per, shards }
+local exercise=nil
 local screen = 'decks'                 -- decks | study | done
 local deck, st = nil, nil              -- the open deck and its state
 local own, own_prog = {}, {}           -- own cards { id, f, b } and their progress by id
@@ -225,6 +226,16 @@ local boot_task=nil
 local boot_step=nil
 local start_loading=nil
 kit.flow={guard=0}
+do
+  local refresh=kit.refresh
+  kit.refresh=function()
+    if kit.flow.input_active then kit.flow.refresh_pending=true else refresh() end
+  end
+  kit.flow.flush_refresh=function()
+    kit.flow.input_active=false
+    if kit.flow.refresh_pending then kit.flow.refresh_pending=false;refresh() end
+  end
+end
 local boot_stage='正在准备'
 local boot_error=nil
 local boot_reads=0
@@ -240,6 +251,8 @@ end
 local function boot_checkpoint()
   if boot_task and coroutine.running()==boot_task then
     boot_reads=boot_reads+1
+    coroutine.yield()
+  elseif kit.flow.prefetch_co and coroutine.running()==kit.flow.prefetch_co then
     coroutine.yield()
   end
 end
@@ -417,25 +430,224 @@ do
   end
 end
 
+-- Bounded redo journal. Staged files are reused, never accumulated per answer.
+kit.tx={}
+do
+  local T=kit.tx
+  local marker='answer_pending.txt'
+  local function checksum(s)
+    local a,b=1,0
+    for i=1,#s do a=(a+s:byte(i))%65521;b=(b+a)%65521 end
+    return string.format('%08x',(b<<16)|a)
+  end
+  local function checked(name,value)
+    local result,why=ctx.storage:write(name,value)
+    if result==false or (result==nil and why~=nil) or ctx.storage:read(name)~=value then error('保存校验失败，请重新打开以恢复记录。') end
+  end
+  local function parse(raw)
+    local hash,body=raw:match('^IW_TX1 (%x+)\n(.*)$')
+    if not hash or checksum(body)~=hash then return nil end
+    local rows={}
+    for line in body:gmatch('[^\n]+') do
+      local name,index,size,digest=line:match('^([%w_]+%.txt) (%d+) (%-?%d+) (%x+)$')
+      index,size=tonumber(index),tonumber(size)
+      if not name or not index or index~=#rows+1 or index>6 or size< -1 then return nil end
+      rows[#rows+1]={name=name,index=index,size=size,hash=digest}
+    end
+    return #rows>0 and rows or nil
+  end
+  local function parse2(raw)
+    local hash,body=raw:match('^IW_TX2 (%x+)\n(.*)$')
+    if not hash or checksum(body)~=hash then return nil end
+    local rows,pos={},1
+    while pos<=#body do
+      local stop=body:find('\n',pos,true);if not stop then return nil end
+      local name,size=body:sub(pos,stop-1):match('^([%w_]+%.txt) (%-?%d+)$');size=tonumber(size)
+      if not name or not size or size< -1 or #rows>=6 then return nil end
+      local n=math.max(0,size);if stop+n>#body then return nil end
+      rows[#rows+1]={name=name,size=size,value=size>=0 and body:sub(stop+1,stop+n) or nil}
+      pos=stop+n+1
+    end
+    return #rows>0 and rows or nil
+  end
+  local function apply(rows,one)
+    extend_budget()
+    for i=rows.next or 1,#rows do
+      local r=rows[i]
+      if r.size<0 then
+        local result,why=ctx.storage:remove(r.name)
+        if result==false or (result==nil and why~=nil) or ctx.storage:read(r.name)~=nil then error('记录删除未完成，请重试。') end
+      else checked(r.name,r.value) end
+    rows.next=i+1
+    if one then return false end
+    end
+    checked(marker,'')
+    return true
+  end
+  function T.flush()
+    local rows=T.pending;if not rows then return end
+    local ok,err=pcall(apply,rows)
+    if not ok then storage_error='保存失败';error(err) end
+    T.pending=nil
+  end
+  function T.recover(verified)
+    local raw=ctx.storage:read(marker)
+    if not raw or raw=='' then return end
+    if raw:sub(1,7)=='IW_TX2 ' then
+      local rows=parse2(raw)
+      if not rows then checked(marker,'');return end
+      apply(rows);return
+    end
+    local rows=verified or parse(raw)
+    -- An incomplete manifest cannot have started target writes; a torn clear follows complete writes.
+    if not rows then checked(marker,'');return end
+    if not verified then for _,r in ipairs(rows) do
+      local value=ctx.storage:read('answer_stage_'..r.index..'.txt')
+      if type(value)~='string' or #value~=math.max(0,r.size) or checksum(value)~=r.hash then
+        error('答题恢复文件不完整，请保留学习记录。')
+      end
+    end end
+    for _,r in ipairs(rows) do
+      local ok,used=pcall(function()return ctx.gc:count()end)
+      if not ok or used>800000 then release_memory() end
+      local value=ctx.storage:read('answer_stage_'..r.index..'.txt')
+      if r.size<0 then
+        local result,why=ctx.storage:remove(r.name)
+        if result==false or (result==nil and why~=nil) or ctx.storage:read(r.name)~=nil then error('记录删除未完成，请重试。') end
+      else checked(r.name,value) end
+    end
+    checked(marker,'')
+  end
+  function T.begin(keep_preparation)
+    if T.active then error('重复保存任务') end
+    T.flush()
+    if not keep_preparation and kit.flow.cancel_prefetch then kit.flow.cancel_prefetch(true) end
+    local ok,used=pcall(function()return ctx.gc:count()end)
+    if not ok or used>750000 then
+      if ctx.gc and ctx.gc.collect then pcall(function()ctx.gc:collect()end) else release_memory() end
+    end
+    T.active={};T.bytes=0;T.spilled=false
+  end
+  function T.stage(name,value)
+    local rows=T.active;local r
+    for _,item in ipairs(rows) do if item.name==name then r=item;break end end
+    if not r then
+      if #rows>=6 then error('保存任务过大') end
+      r={name=name,index=#rows+1};rows[#rows+1]=r
+    end
+    T.bytes=T.bytes-(r.size and math.max(0,r.size) or 0)+(value and #value or 0)
+    r.size=value and #value or -1;r.value=value
+    if not T.spilled and T.bytes>16384 then
+      T.spilled=true
+      for _,item in ipairs(rows) do
+        local raw=item.value or '';item.hash=checksum(raw)
+        checked('answer_stage_'..item.index..'.txt',raw);item.value=nil
+      end
+    elseif T.spilled then
+      local raw=value or '';r.hash=checksum(raw)
+      checked('answer_stage_'..r.index..'.txt',raw);r.value=nil
+    end
+  end
+  function T.read(name)
+    local rows=T.active or T.pending
+    if rows then for _,r in ipairs(rows) do if r.name==name then
+      if T.active and T.spilled then return true,r.size>=0 and ctx.storage:read('answer_stage_'..r.index..'.txt') or nil end
+      return true,r.value
+    end end end
+    return false
+  end
+  function T.commit()
+    local rows=T.active
+    if #rows==0 then T.active=nil;return end
+    if not T.spilled then
+      local parts={}
+      for _,r in ipairs(rows) do parts[#parts+1]=r.name..' '..r.size..'\n';parts[#parts+1]=r.value or '' end
+      local body=table.concat(parts)
+      checked(marker,'IW_TX2 '..checksum(body)..'\n'..body)
+      T.pending=rows;T.active=nil;T.rendered=false
+      return
+    end
+    local lines={}
+    for _,r in ipairs(rows) do lines[#lines+1]=r.name..' '..r.index..' '..r.size..' '..r.hash end
+    local body=table.concat(lines,'\n')..'\n'
+    checked(marker,'IW_TX1 '..checksum(body)..'\n'..body)
+    T.active=nil
+    T.recover(rows)
+  end
+  function T.after_draw(delay)
+    if not T.pending or storage_error then return end
+    T.rendered=true
+    if T.scheduled then return end
+    T.scheduled=true
+    local ok,result,why=pcall(function()return ctx:after(delay or 80,function()
+      T.scheduled=false
+      if not T.pending or not T.rendered or storage_error then return end
+      local success,done=pcall(apply,T.pending,true)
+      if not success then storage_error='保存失败';kit.refresh();return end
+      if done then T.pending=nil else T.after_draw(16) end
+    end)end)
+    if not ok or result==false or (result==nil and why~=nil) then T.scheduled=false;T.flush() end
+  end
+  function T.run(fn,...)
+    T.begin(fn==T.entry)
+    local ok,result=pcall(fn,...)
+    if ok then ok,result=pcall(function()T.commit();return result end) end
+    T.active=nil
+    if not ok then storage_error='保存失败';error(result) end
+    return result
+  end
+end
+
 local small_cache={}
-local small_keys={['recent_decks.txt']=true,['new_word_order.txt']=true,['random_modes.txt']=true}
+local small_keys={['recent_decks.txt']=true,['new_word_order.txt']=true,['random_modes.txt']=true,['daily.txt']=true}
 local function sread(name)
+  local staged,value=kit.tx.read(P.path(name));if staged then return value end
   if small_keys[name] and small_cache[name]~=nil then return small_cache[name] or nil end
+  local path=name:match('_p%d+%.txt$') and P.path(name)
+  local cached=kit.flow.progress_cache
+  if path and cached and cached.path==path then return cached.value or nil end
   boot_checkpoint()
   local ok, s = pcall(function() return P.read(name) end)
   local value=(ok and type(s)=='string') and s or nil
   if small_keys[name] then small_cache[name]=value or false end
+  if path then
+    kit.flow.progress_cache=(not value or #value<=4096) and {path=path,value=value or false} or nil
+  end
   return value
 end
 local function swrite(name, s)
+  kit.flow.summary_cache=nil
+  if not kit.tx.active then kit.tx.flush() end
+  kit.flow.resume=nil
   boot_checkpoint()
   local measured,used=pcall(function()return ctx.gc:count()end)
-  if measured and type(used)=='number' and used>=600000 then release_memory() end
-  local ok,result,why=pcall(function() return P.write(name,s) end)
+  if measured and type(used)=='number' and used>=(kit.tx.active and 800000 or 600000) then
+    -- Reclaim temporary objects first; keep the current prompt when it fits.
+    pcall(function()ctx.gc:collect()end)
+    local ok,remaining=pcall(function()return ctx.gc:count()end)
+    if not ok or type(remaining)~='number' or remaining>=700000 then release_memory() end
+  end
+  local ok,result,why=pcall(function() if kit.tx.active then return kit.tx.stage(P.path(name),s) end;return P.write(name,s) end)
   if not ok or result==false or (result==nil and why~=nil) then storage_error='保存失败';error('保存失败，请检查存储空间并重新打开工具。') end
   if small_keys[name] then small_cache[name]=s end
+  if name=='random_modes.txt' then
+    if kit.flow.cancel_prefetch then kit.flow.cancel_prefetch() end
+    if exercise then exercise.next_ready=nil;exercise.prefetch_scheduled=nil end
+  end
+  if name:match('_p%d+%.txt$') then
+    kit.flow.progress_cache=#s<=4096 and {path=P.path(name),value=s} or nil
+  end
 end
-local function sremove(name) pcall(function() P.remove(name) end) end
+local function sremove(name)
+  kit.flow.summary_cache=nil
+  if not kit.tx.active then kit.tx.flush() end
+  kit.flow.resume=nil
+  if kit.tx.active then kit.tx.stage(P.path(name),nil);small_cache[name]=nil;kit.flow.progress_cache=nil;return end
+  small_cache[name]=nil
+  local cached=kit.flow.progress_cache
+  if cached and cached.path==P.path(name) then kit.flow.progress_cache=nil end
+  pcall(function() P.remove(name) end)
+end
 -- a file from the app's user folder (ctx.files, API 2.9: AppFiles/<app_id>, where the user
 -- copies decks), read 64 KB at a time; a host that hands back the whole file is fine too
 local function files_read(name)
@@ -445,13 +657,15 @@ local function files_read(name)
   local ok, t = pcall(function()
     if not F:exists(name) then return nil end
     local parts, off = {}, 0
+    local chunk=kit.flow.prefetching and 8192 or 65536
     for _i = 1, 64 do
-      local piece = F:read(name, off, 65536)
+      if _i>1 then boot_checkpoint() end
+      local piece = F:read(name, off, chunk)
       if type(piece) ~= 'string' or piece == '' then break end
       if off+#piece>120000 then return nil end
       parts[#parts + 1] = piece
       off = off + #piece
-      if #piece ~= 65536 then break end
+      if #piece ~= chunk then break end
     end
     return table.concat(parts)
   end)
@@ -503,7 +717,7 @@ local function load_settings()
   local t = kv(sread('settings.txt'))
   settings.recent = t.recent
   if P.load().seq>0 then settings.recent=(sread('recent_decks.txt') or ''):match('^([^\n]+)') end
-  settings.recent_mode = ({random=true,quiz=true,reverse=true,cloze=true,match=true,flash=true})[t.recent_mode or ''] and t.recent_mode or 'random'
+  settings.recent_mode = ({random=true,quiz=true,reverse=true,cloze=true,match=true,flash=true,letters=true})[t.recent_mode or ''] and t.recent_mode or 'random'
   local daily=tonumber(t.new_per_day) or 15
   settings.new_per_day=daily==0 and 0 or math.max(1,math.min(50,math.floor(daily)))
   settings.lock_deck = (t.lock_deck and t.lock_deck ~= '') and t.lock_deck or nil
@@ -564,7 +778,40 @@ end
 -- the cards of shard s: { { id, f, b } ... } (one shard cached)
 -- Keep encoded lines, decode only the cards needed on screen. Stable line IDs preserve progress.
 local cache = { key = nil, rows = nil }
-local file_cache={name=nil,text=nil}
+local file_cache={name=nil,text=nil,indexes={}}
+-- Compact byte offsets survive eviction of large text, bounded to 16 recent files.
+function kit.flow.read_word_block(filename,first,expected)
+  local offsets
+  for _,v in ipairs(file_cache.indexes) do if v.name==filename then offsets=v.offsets;break end end
+  if offsets then
+    local pos=first//25*3+1
+    if pos+5<=#offsets then
+      local a,b,c,d,e,f=offsets:byte(pos,pos+5)
+      local off=a*65536+b*256+c;local size=d*65536+e*256+f-off
+      if size>0 and size<=120000 then
+        boot_checkpoint()
+        local ok,text=pcall(function()return ctx.files:read(filename,off,size)end)
+        if ok and type(text)=='string' and #text==size and text:sub(-1)=='\n' and tonumber(text:match('^(%d+)\t'))==expected then
+          return text,first
+        end
+      end
+    end
+  end
+  -- First visit, changed file, or hosts ignoring ranged reads: retain safe full-file path.
+  local text=files_read(filename)
+  if type(text)~='string' or #text>120000 or text:sub(-1)~='\n' then return nil end
+  local out={string.char(0,0,0)};local row,pos=0,1
+  while true do
+    local stop=text:find('\n',pos,true);if not stop then break end
+    row=row+1;pos=stop+1
+    if row%25==0 then out[#out+1]=string.char(stop//65536,(stop//256)%256,stop%256) end
+  end
+  if row%25~=0 then local n=#text;out[#out+1]=string.char(n//65536,(n//256)%256,n%256) end
+  for i=#file_cache.indexes,1,-1 do if file_cache.indexes[i].name==filename then table.remove(file_cache.indexes,i) end end
+  file_cache.indexes[#file_cache.indexes+1]={name=filename,offsets=table.concat(out)}
+  if #file_cache.indexes>16 then table.remove(file_cache.indexes,1) end
+  return text,nil
+end
 local function shard(d, s)
   local ck = d.key .. ':' .. s
   if cache.key == ck then return cache.rows end
@@ -582,15 +829,16 @@ local function shard(d, s)
           block_rows=nil;block_index=-1
           local physical=global//d.physical
           local filename=string.format('%s_%s%03d.txt',d.key,d.suffix,physical)
-          if file_cache.name~=filename then
-            file_cache.name=nil;file_cache.text=nil;release_memory()
-            local data=files_read(filename)
+          local first=(block*25)%d.physical
+          if file_cache.name~=filename or (file_cache.first and file_cache.first~=first) then
+            file_cache.name=nil;file_cache.text=nil;file_cache.first=nil;release_memory()
+            local data,base=kit.flow.read_word_block(filename,first,block*25+1)
             if type(data)~='string' or #data>120000 or data:sub(-1)~='\n' then error('词库内容缺失或不完整，请重新复制 AppFiles。') end
-            file_cache.text=data;file_cache.name=filename
+            file_cache.text=data;file_cache.name=filename;file_cache.first=base
           end
           local text=file_cache.text
           if type(text)~='string' or #text>120000 or text:sub(-1)~='\n' then error('词库内容缺失或不完整，请重新复制 AppFiles。') end
-          local content={};local row=0;local first=(block*25)%d.physical
+          local content={};local row=0;first=first-(file_cache.first or 0)
           for line in text:gmatch('([^\n]*)\n') do
             if row>=first then content[#content+1]=line end
             row=row+1;if #content==25 then break end
@@ -865,6 +1113,7 @@ function kit.memory.expose(e)
   save_record(deck,e.s,e.l,updated);save_state(deck)
 end
 
+do local expose=kit.memory.expose;kit.memory.expose=function(e)return kit.tx.run(expose,e)end end
 local function span(sec)
   if sec < 3600 then return math.max(1, sec // 60) .. 'm' end
   local d = sec / 86400
@@ -1015,21 +1264,23 @@ end
 ------------------------------------------------------------------ opening a deck
 
 local function open_deck_sync(d)
+  local resume=kit.flow.resume
+  local reuse=resume and resume.key==d.key and resume.path==P.path(d.key..'_st.txt') and resume.day==today() and now_sec()<resume.expires and (random_mix or resume.mode==mode) and resume.mix==random_mix
   kit.flow.guard=0
   local recent={d.key}
   for key in (sread('recent_decks.txt') or ''):gmatch('[^\n]+') do
     if key~=d.key and #recent<5 then recent[#recent+1]=key end
   end
-  swrite('recent_decks.txt',table.concat(recent,'\n'))
+  local recent_text=table.concat(recent,'\n')
+  if sread('recent_decks.txt')~=recent_text then swrite('recent_decks.txt',recent_text) end
   kit.close()
-  settings.recent=d.key; save_settings()
+  if settings.recent~=d.key then settings.recent=d.key;save_settings() end
   deck = d
   st = load_state(d)
   load_own(d); load_dels(d)
-  build_queue()
+  if reuse and #resume.queue>0 then queue=resume.queue;kit.flow.resume=nil else build_queue() end
   screen, shown, scroll, last, session.done, msg = 'study', false, 0, nil, 0, nil
   if #queue == 0 then screen = 'done' end
-  save_state(d)
 end
 local function open_deck(d)
   screen='decks'
@@ -1044,7 +1295,10 @@ local function summary(d)
   local now, due, studied = now_sec(), 0, 0
   local refresh_at=math.huge
   for k, _ in pairs(s.mins) do
+    collect_if_needed()
+    local scanned=0
     for line in lines(progress_text(d,k)) do
+      scanned=scanned+1;if scanned%32==0 then boot_checkpoint() end
       local _,at,_,_,reps,_,last_at=line:match('^(%S+) (%-?%d+) ([%d%.]+) ([%d%.]+) (%d+) (%d+) ?(%-?%d*)')
       if at then
         if tonumber(reps)>0 then studied=studied+1 end
@@ -1105,6 +1359,7 @@ local function write_lock_cards()
   end
   table.sort(due, function(a, b) return a.due < b.due end)
   for _k, e in ipairs(due) do
+    if #out>=LOCK_CARDS then break end
     if e.s == 'own' then local c = mine[e.l]; if c then add(c.f, c.b) end else base(e.s, e.l) end
   end
   local k, total = s.next, slots(d)
@@ -1117,7 +1372,8 @@ local function write_lock_cards()
     k = k + 1
   end
   for _id, c in pairs(mine) do add(c.f, c.b) end
-  swrite('lock_cards.txt', d.name .. '\n' .. table.concat(out, '\n') .. '\n')
+  local content=d.name .. '\n' .. table.concat(out, '\n') .. '\n'
+  if sread('lock_cards.txt')~=content then swrite('lock_cards.txt',content) end
 end
 
 -- this deck on the lock screen, or (when it is already) off again
@@ -1143,9 +1399,23 @@ local function toggle_lock(d)
 end
 
 local function show_decks(skip_summary)
+  kit.tx.flush()
+  if screen=='study' and deck and not storage_error and not boot_task then
+    local pending={};local saved=exercise and exercise.saved or {}
+    for _,e in ipairs(queue) do
+      if not saved[tostring(e.s)..':'..tostring(e.l)] then pending[#pending+1]=e end
+    end
+    local expires=now_sec()+60
+    for _,due in pairs(st.mins) do if due>now_sec() then expires=math.min(expires,due) end end
+    kit.flow.resume={key=deck.key,path=P.path(deck.key..'_st.txt'),day=today(),expires=expires,mode=mode,mix=random_mix,queue=pending}
+  end
   -- Leaving a page invalidates its continuations, even for quiet refills.
   boot_task=nil;boot_serial=boot_serial+1;boot_error=nil;ERR=nil
-  exercise=nil;queue={}
+  if kit.flow.cancel_prefetch then kit.flow.cancel_prefetch() end
+  exercise=nil;queue={};last=nil
+  cache.key=nil;cache.rows=nil;file_cache.name=nil;file_cache.text=nil
+  kit.flow.progress_cache=nil
+  release_memory()
   screen,deck='decks',nil
   if not skip_summary and request_visible_summaries then request_visible_summaries() end
 end
@@ -1199,15 +1469,18 @@ local function record_result(e,r,before,kind)
   local t=daily_stats();local k=before and 'review' or 'fresh';t[k]=t[k]+1
   if r==1 then
     t.wrong=t.wrong+1
-    local rows=wrong_rows(deck);local found=false
-    for _,w in ipairs(rows) do if entry_id(w)==entry_id(e) then w.errors=w.errors+1;found=true;break end end
-    if not found then rows[#rows+1]={s=e.s,l=e.l,errors=1} end
-    write_wrong(deck,rows)
+    local raw=sread(deck.key..'_wrong.txt') or '';local id=entry_id(e);local found=false
+    local updated=raw:gsub('([^\n]+)',function(line)
+      local key,count=line:match('^(%S+) (%d+)$')
+      if key==id then found=true;return key..' '..(tonumber(count)+1) end
+      return line
+    end)
+    if not found then updated=updated..(updated~='' and '\n' or '')..id..' 1' end
+    swrite(deck.key..'_wrong.txt',updated)
   end
   swrite('daily.txt','day='..t.day..'\nfresh='..t.fresh..'\nreview='..t.review..'\nwrong='..t.wrong..extra)
 end
-local function commit_entry(e,grade,kind)
-  collect_if_needed()
+function kit.tx.entry(e,grade,kind)
   if st.day~=today() then st.day=today();st.new=0 end
   if type(collectgarbage)=='function' then pcall(collectgarbage,'collect') end
   local before=e.s=='own' and own_prog[e.l] or read_record(deck,e.s,e.l)
@@ -1228,8 +1501,10 @@ local function commit_entry(e,grade,kind)
   return rec
 end
 
-local function rate(r)
-  collect_if_needed()
+local function commit_entry(e,grade,kind)
+  return kit.tx.run(kit.tx.entry,e,grade,kind)
+end
+function kit.tx.rate(r)
   if st.day~=today() then st.day=today();st.new=0 end
   local e = queue[1]
   if not e then return end
@@ -1257,7 +1532,8 @@ local function rate(r)
   if #queue == 0 then kit.flow.refill() end
 end
 
-local function undo()
+local function rate(r) return kit.tx.run(kit.tx.rate,r) end
+function kit.tx.undo()
   if not last then msg = '暂无可撤销记录。'; return end
   local e = last.e
   if e.s == 'own' then
@@ -1274,7 +1550,8 @@ local function undo()
   last, shown, scroll, screen, msg = nil, false, 0, 'study', nil
 end
 
-local function delete_current()
+local function undo() return kit.tx.run(kit.tx.undo) end
+function kit.tx.delete()
   local e = queue[1]
   if not e then return end
   if e.s == 'own' then
@@ -1296,6 +1573,7 @@ local function delete_current()
   if #queue == 0 then kit.flow.refill() end
 end
 
+local function delete_current() return kit.tx.run(kit.tx.delete) end
 local function add_card(d)
   local function ask(title, value, fn)
     ctx.input:text({ title = title, text = value or '', max_bytes = 256 }, function(c, s) pcall(fn, s) ; kit.refresh() end)
@@ -1413,7 +1691,7 @@ local function row_h(r)
 end
 
 -- Original interactive exercises for the Licorice host. No MemDeck code used.
-local exercise, mode = nil, 'quiz'
+local mode = 'quiz'
 local choose_mode
 local random_mix, previous_mode = false, nil
 local function random_modes()
@@ -1566,6 +1844,7 @@ local function prepare_exercise()
     mode=choices[math.random(#choices)]; previous_mode=mode
   end
   if (mode=='cloze' and not cloze_for(c)) or (mode=='letters' and not kit.letters.accept(c)) then
+    if kit.flow.prefetching then return end
     local active=deck
     if mode=='letters' and queue[1].s~='own' then
       local e=queue[1];local index=e.s*deck.per+e.l
@@ -1645,9 +1924,9 @@ local function text_block(gg,s,x,y,width,limit,font)
   end
 end
 -- Keep all text inside the existing touch regions; no additional asset cache.
-local function text_in_box(gg,text,x,y,w,h,font,center,limit,strong)
+local function text_in_box(gg,text,x,y,w,h,font,center,limit,strong,prepared)
   font=font or 'medium'
-  local ls=wrapped_text(text,w,font)
+  local ls=prepared or wrapped_text(text,w,font)
   local step=math.max(28,kit.line_h(font)+5)
   local count=math.min(#ls,limit or math.floor(h/step))
   local yy=y+math.max(0,(h-(count-1)*step-kit.line_h(font))//2)
@@ -1681,6 +1960,8 @@ end
 do
   local cache=nil
   kit.evict_prompt=function()cache=nil end
+  kit.prompt_snapshot=function()return cache end
+  kit.prompt_restore=function(value)cache=value end
   local function prepare(text,w,h)
     if cache and cache.text==text and cache.w==w and cache.h==h then return not cache.unavailable and cache or nil end
     cache=nil;collect_if_needed()
@@ -1693,16 +1974,21 @@ do
     end
     local glyphs={};local commands=0
     for block in pairs(groups) do
+      local remaining=0;for code in pairs(needed) do if code//256==block then remaining=remaining+1 end end
       local ok,reader=pcall(function()return ctx.package:open_text(string.format('uf%04x.txt',block))end)
       if not ok or not reader then return failed() end
+      local owner=kit.flow.prefetching and kit.flow.prefetch_job or nil
+      if owner then owner.reader=reader end
       local success=pcall(function()
         while true do
+          if owner then boot_checkpoint() end
           local line=reader:read_line();if not line then break end;line=line:gsub('\r$','')
           local key,value=line:match('^(%d+)\t(.*)$');key=tonumber(key)
-          if needed[key] and (#value-1)%4==0 then glyphs[key]=value end
+          if needed[key] and not glyphs[key] and (#value-1)%4==0 then glyphs[key]=value;remaining=remaining-1;if remaining==0 then break end end
         end
       end)
       pcall(function()reader:close()end)
+      if owner then owner.reader=nil end
       if not success then return failed() end
     end
     for _,code in ipairs(codes) do
@@ -1787,8 +2073,15 @@ end
 
 
 local function pair_text(gg,text,x,y,w,h)
-  local font=#wrapped_text(text,w,'medium')<=2 and 'medium' or 'small'
-  text_in_box(gg,text,x,y,w,h,font,#wrapped_text(text,w,font)==1,font=='medium' and 2 or 3)
+  local q=exercise;local key=x..':'..y
+  q.pair_layout=q.pair_layout or {}
+  local item=q.pair_layout[key]
+  if not item or item.text~=text or item.width~=w then
+    local rows=wrapped_text(text,w,'medium');local font=#rows<=2 and 'medium' or 'small'
+    if font=='small' then rows=wrapped_text(text,w,font) end
+    item={text=text,width=w,font=font,rows=rows};q.pair_layout[key]=item
+  end
+  text_in_box(gg,text,x,y,w,h,item.font,#item.rows==1,item.font=='medium' and 2 or 3,false,item.rows)
 end
 local function draw_prompt(gg,q)
   if q.sentence then
@@ -1819,6 +2112,19 @@ local function draw_prompt(gg,q)
   local centered=mode=='quiz' or (mode=='reverse' and kit.width(kit.font(font),q.prompt)<=408)
   text_in_box(gg,q.prompt,36,144,408,112,font,centered,font=='small' and 4 or 3,mode=='quiz')
 end
+kit.flow.warm_gg={text=function()end,rect=function()end,line=function()end}
+function kit.flow.warm_layout(q)
+  local measured,used=pcall(function()return ctx.gc:count()end)
+  if measured and used>650000 then
+    cache.key=nil;cache.rows=nil;file_cache.name=nil;file_cache.text=nil;file_cache.first=nil
+    if ctx.gc and ctx.gc.collect then pcall(function()ctx.gc:collect()end) end
+  end
+  if mode=='letters' then kit.letters.layout(q)
+  elseif mode=='match' then
+    for i,c in ipairs(q.left) do pair_text(kit.flow.warm_gg,word(c),24,164+(i-1)*112,194,84);boot_checkpoint() end
+    for i,r in ipairs(q.right) do pair_text(kit.flow.warm_gg,meaning(r.card),258,164+(i-1)*112,198,84);boot_checkpoint() end
+  else draw_prompt(kit.flow.warm_gg,q) end
+end
 do
   local original_show=kit.show
   kit.show=function(m)
@@ -1826,9 +2132,12 @@ do
     for _,row in ipairs(m.rows or {}) do
       if not (#row==2 and row[1][1]=='上一页' and row[2][1]=='下一页 1/1') then rows[#rows+1]=row end
     end
-    m.rows=rows;original_show(m)
+    if not storage_error then kit.tx.flush() end
+    kit.flow.cancel_prefetch(true)
+    m.rows=rows;m.ink_layout=nil;original_show(m)
   end
   local function dialog_layout(m)
+    if m.ink_layout then return table.unpack(m.ink_layout) end
     local lines={}
     if m.title then for _,line in ipairs(wrapped_text(m.title,400,'medium')) do lines[#lines+1]={text=line,font='medium',height=34} end end
     if #lines>0 then lines[#lines].height=lines[#lines].height+10 end
@@ -1843,6 +2152,7 @@ do
       for k,b in ipairs(row) do buttons[#buttons+1]={x=40+(k-1)*(bw+12),y=by,w=bw,h=54,b=b} end
       by=by+64
     end
+    m.ink_layout={lines,buttons,y,h}
     return lines,buttons,y,h
   end
   kit.draw_modal=function(gg)
@@ -1928,28 +2238,29 @@ function kit.letters.prepare(q)
 end
 -- Reuse the packaged Latin font. Cache at most eight glyphs for this question.
 function kit.letters.load_glyphs(s)
-  s.glyphs={};local needed,groups={},{};for _,c in ipairs(s.choices) do local code=utf8.codepoint(c);needed[code]=true;groups[code//256]=true end
-  for block in pairs(groups) do
-  local ok,reader=pcall(function()return ctx.package:open_text(string.format('uf%04x.txt',block))end)
+  s.glyphs={};local needed={};local remaining=0
+  for _,c in ipairs(s.choices) do local code=utf8.codepoint(c);if not needed[code] then needed[code]=true;remaining=remaining+1 end end
+  local ok,reader=pcall(function()return ctx.package:open_text('spelling_font.txt')end)
   if not ok or not reader then return end
+  local owner=kit.flow.prefetching and kit.flow.prefetch_job or nil
+  if owner then owner.reader=reader end
   pcall(function()
-    while true do
+    while remaining>0 do
+      boot_checkpoint()
       local line=reader:read_line();if not line then break end
-      line=line:gsub('\r$','');local code,raw=line:match('^(%d+)\t(.*)$');code=tonumber(code)
+      local code,bounds,raw=line:gsub('\r$',''):match('^(%d+)\t([^\t]+)\t(.*)$');code=tonumber(code)
       if needed[code] and #raw>1 and (#raw-1)%4==0 then
-        local left,top,right,bottom=math.huge,math.huge,0,0
-        for p=2,#raw,4 do
-          local x,y,w,h=raw:byte(p,p+3);x=x-33;y=y-33;w=w-33;h=h-33
-          left=math.min(left,math.floor(x*.75));top=math.min(top,math.floor(y*.75))
-          right=math.max(right,math.floor((x+w)*.75));bottom=math.max(bottom,math.floor((y+h)*.75))
-        end
-        s.glyphs[utf8.char(code)]={raw=raw,x=left,y=top,w=right-left,h=bottom-top}
+        local x,y,w,h=bounds:match('^(%d+),(%d+),(%d+),(%d+)$')
+        if not x then error('Invalid spelling glyph bounds') end
+        s.glyphs[utf8.char(code)]={raw=raw,x=tonumber(x),y=tonumber(y),w=tonumber(w),h=tonumber(h)}
+        needed[code]=nil;remaining=remaining-1
       end
     end
   end)
   pcall(function()reader:close()end)
-  end
+  if owner then owner.reader=nil end
 end
+
 function kit.letters.draw_glyph(gg,s,c,r)
   local glyph=s.glyphs[c]
   if not glyph then
@@ -1958,8 +2269,7 @@ function kit.letters.draw_glyph(gg,s,c,r)
   local ox=r.x+(r.w-glyph.w)//2-glyph.x;local oy=r.y+(r.h-glyph.h)//2-glyph.y
   for p=2,#glyph.raw,4 do
     local x,y,w,h=glyph.raw:byte(p,p+3);x=x-33;y=y-33;w=w-33;h=h-33
-    local xx,yy=math.floor(x*.75),math.floor(y*.75)
-    gg:rect(ox+xx,oy+yy,math.max(1,math.floor((x+w)*.75)-xx),math.max(1,math.floor((y+h)*.75)-yy),{fill=true})
+    gg:rect(ox+x,oy+y,w,h,{fill=true})
   end
 end
 function kit.letters.layout(q)
@@ -1968,16 +2278,33 @@ function kit.letters.layout(q)
   for i=1,#s.word do display[i]=slots[i] and (s.filled[slots[i]] or '  ') or s.word:sub(i,i) end
   local text=table.concat(display)
   if s.layout and s.layout.text==text then return s.layout end
+  if s.layout then
+    local l=s.layout;local f=kit.font(l.font);local count=0
+    for i=1,#s.word do
+      if display[i]~='  ' and display[i]~=' ' then
+        count=count+1;local cell=l.cells[i];local line=l.lines[count] or {}
+        line.x=cell.x+(cell.w-kit.width(f,display[i]))//2;line.y=cell.y;line.text=display[i];l.lines[count]=line
+      end
+    end
+    for i=#l.lines,count+1,-1 do l.lines[i]=nil end
+    l.text=text;return l
+  end
   collect_if_needed()
   local l=s.layout
   if not l then
     local width=W-40;local height=170;local font=word_font(s.word,width)
     for _,name in ipairs({font,'large','medium','small'}) do
       local ranges={};local first,total=1,0;local f=kit.font(name)
-      for i=1,#s.word do
-        local w=slots[i] and math.max(kit.width(f,'W'),kit.width(f,'  ')) or kit.width(f,s.word:sub(i,i))
-        if total+w>width and i>first then ranges[#ranges+1]={first,i-1};first=i;total=0 end
-        total=total+w
+      local i,last_space=1,nil
+      while i<=#s.word do
+        local c=s.word:sub(i,i)
+        local w=c==' ' and math.max(kit.width(f,' ')*2,math.ceil(kit.width(f,'W')*((slots[i-1] and slots[i+1]) and .9 or .65))) or (slots[i] and math.max(kit.width(f,'W'),kit.width(f,'  ')) or kit.width(f,c))
+        if total+w>width and i>first then
+          local stop=last_space and last_space>=first and last_space or i-1
+          ranges[#ranges+1]={first,stop};first=stop+1;i=first;total=0;last_space=nil
+        else
+          total=total+w;if c==' ' then last_space=i end;i=i+1
+        end
       end
       ranges[#ranges+1]={first,#s.word}
       local step=kit.line_h(name)+math.max(14,math.ceil(kit.line_h(name)*.4))
@@ -1996,14 +2323,15 @@ function kit.letters.layout(q)
   for row,range in ipairs(l.ranges) do
     local widths,total={},0
     for i=range[1],range[2] do
-      widths[i]=slots[i] and math.max(kit.width(f,'W'),kit.width(f,'  ')) or kit.width(f,s.word:sub(i,i))
+      local c=s.word:sub(i,i)
+      widths[i]=c==' ' and ((i==range[1] or i==range[2]) and 0 or math.max(kit.width(f,' ')*2,math.ceil(kit.width(f,'W')*((slots[i-1] and slots[i+1]) and .9 or .65)))) or (slots[i] and math.max(kit.width(f,'W'),kit.width(f,'  ')) or kit.width(f,c))
       total=total+widths[i]
     end
     local x=(W-total)//2
     local y=136+(170-#l.ranges*l.step)//2+(row-1)*l.step
     for i=range[1],range[2] do
       l.cells[i]={x=x,y=y,w=widths[i]}
-      if display[i]~='  ' then
+      if display[i]~='  ' and display[i]~=' ' then
         l.lines[#l.lines+1]={x=x+(widths[i]-kit.width(f,display[i]))//2,y=y,text=display[i]}
       end
       x=x+widths[i]
@@ -2027,7 +2355,15 @@ function kit.letters.draw(gg,q)
     kit.letters.draw_glyph(gg,s,c,r)
   end
   if q.answered then
-    local label=q.correct and '回答正确：' or '正确拼写：'
+    if q.correct then
+      local f=kit.font('medium');local label='拼写正确'
+      gg:text((W-kit.width(f,label))//2,646-kit.line_h('medium')//2,label,{font=f});return
+    end
+    if not q.revealed then
+      local f=kit.font('small');local label='拼写错误'
+      gg:text((W-kit.width(f,label))//2,592,label,{font=f})
+    end
+    local label='正确拼写：'
     local small=kit.font('small');local label_width=kit.width(small,label)
     -- Keep label and reference on the same baseline; reduce only as needed.
     for _,name in ipairs({'large','medium','small'}) do
@@ -2041,6 +2377,7 @@ function kit.letters.draw(gg,q)
         -- Exceptionally long words continue naturally after the inline label.
         local lines=wrapped_text(label..s.word,W-40,'small');local step=h+2
         local y=646-((#lines-1)*step+h)//2
+        if not q.revealed then y=math.max(618,y) end
         for i,line in ipairs(lines) do gg:text((W-kit.width(small,line))//2,y+(i-1)*step,line,{font=small}) end
         break
       end
@@ -2050,7 +2387,7 @@ end
 function kit.letters.tap(q,x,y)
   local s=q.spelling;local l=kit.letters.layout(q)
   if y>=704 then
-    q.answered=true;q.failed=true;q.correct=false;save_answer(q,q.card,true);return
+    save_answer(q,q.card,true);q.answered=true;q.failed=true;q.correct=false;q.revealed=true;return
   end
   if x>=12 and x<W-12 and y>=614 and y<670 then
     local j=s.active
@@ -2069,7 +2406,7 @@ function kit.letters.tap(q,x,y)
       local result={};for p=1,#s.word do result[p]=s.word:sub(p,p) end
       for j,p in ipairs(s.slots) do result[p]=s.filled[j] end
       s.submitted=table.concat(result);q.correct=s.submitted:lower()==s.word:lower()
-      q.failed=not q.correct;q.answered=true;save_answer(q,q.card,q.failed);return
+      save_answer(q,q.card,not q.correct);q.failed=not q.correct;q.answered=true;return
     end
   end
 end
@@ -2088,15 +2425,108 @@ local function choose_answer(i)
   save_answer(q,q.card,not q.options[i].right)
   q.selected=i; q.answered=true; q.correct=q.options[i].right; q.failed=not q.correct
 end
+-- Pipeline: current question plus one prepared successor. No grading or writes.
+function kit.flow.drop_prefetch()
+  local job=kit.flow.prefetch_job
+  if job then
+    if job.reader then pcall(function()job.reader:close()end);job.reader=nil end
+    if coroutine.close and job.co then pcall(coroutine.close,job.co) end
+  end
+  kit.flow.prefetch_job=nil
+end
+function kit.flow.cancel_prefetch(keep_ready)
+  local job=kit.flow.prefetch_job
+  if job and job.target then job.target.prefetch_scheduled=nil end
+  kit.flow.drop_prefetch();kit.flow.prefetch_target=nil
+  if exercise and not keep_ready then exercise.next_ready=nil;exercise.prefetch_scheduled=nil end
+end
+function kit.flow.prefetch_schedule(delay)
+  if kit.flow.prefetch_pending or kit.flow.left then return end
+  kit.flow.prefetch_pending=true
+  local ok,result,why=pcall(function()return ctx:after(delay,kit.flow.prefetch_step)end)
+  if not ok or result==false or (result==nil and why~=nil) then
+    kit.flow.prefetch_pending=false;kit.flow.drop_prefetch()
+  end
+end
+function kit.flow.prefetch_step()
+  extend_budget()
+  kit.flow.prefetch_pending=false
+  local job=kit.flow.prefetch_job
+  if not job then return end
+  if kit.flow.left or exercise~=job.target or screen~='study' or deck~=job.deck or boot_task or storage_error or kit.modal() then
+    kit.flow.cancel_prefetch(true);return
+  end
+  if job.input~=(kit.flow.input_serial or 0) then
+    job.input=kit.flow.input_serial or 0;kit.flow.prefetch_schedule(80);return
+  end
+  if job.steps>600 then kit.flow.drop_prefetch();return end
+  if job.steps==0 then
+    if ctx.gc and ctx.gc.collect then pcall(function()ctx.gc:collect()end) end
+    local measured,used=pcall(function()return ctx.gc:count()end)
+    if measured and used>650000 then
+      cache.key=nil;cache.rows=nil;file_cache.name=nil;file_cache.text=nil;file_cache.first=nil
+      if ctx.gc and ctx.gc.collect then pcall(function()ctx.gc:collect()end) end
+      local ok,live=pcall(function()return ctx.gc:count()end)
+      if not ok or live>700000 then kit.flow.drop_prefetch();return end
+    end
+  end
+  local started=kit.now_ms() or 0
+  for _=1,6 do
+    local current_queue,current_mode,current_previous=queue,mode,previous_mode
+    local current_exercise=exercise
+    local current_prompt=kit.prompt_snapshot();kit.prompt_restore(job.prompt)
+    queue=job.queue;mode=job.mode;previous_mode=job.previous;exercise=job.question
+    kit.flow.prefetching=true;kit.flow.prefetch_co=job.co
+    local ok=coroutine.resume(job.co)
+    job.question,job.mode,job.previous=exercise,mode,previous_mode
+    job.prompt=kit.prompt_snapshot();kit.prompt_restore(current_prompt)
+    queue=current_queue;mode=current_mode;previous_mode=current_previous;exercise=current_exercise
+    kit.flow.prefetching=false;kit.flow.prefetch_co=nil;job.steps=job.steps+1
+    if not ok then kit.flow.drop_prefetch();release_memory();return end
+    if coroutine.status(job.co)=='dead' then
+      if job.question then job.question.prepared_prompt=job.prompt;job.target.next_ready={question=job.question,mode=job.mode,previous=job.previous,id=entry_id(job.queue[1])} end
+      kit.flow.drop_prefetch();return
+    end
+    if (kit.now_ms() or started)-started>=6 then break end
+  end
+  local measured,used=pcall(function()return ctx.gc:count()end)
+  if measured and used>800000 then
+    if ctx.gc and ctx.gc.collect then pcall(function()ctx.gc:collect()end) else release_memory() end
+    local ok,live=pcall(function()return ctx.gc:count()end)
+    if not ok or live>700000 then kit.flow.drop_prefetch();return end
+  end
+  kit.flow.prefetch_schedule(16)
+end
+function kit.flow.prepare_next(q)
+  if q.prefetch_scheduled or q.next_ready or boot_task or storage_error or kit.flow.left or type(ctx.after)~='function' then return end
+  q.prefetch_scheduled=true
+  local excluded={}
+  if mode=='match' then
+    for _,card in ipairs(q.left) do local e=q.entries[card];if e then excluded[entry_id(e)]=true end end
+  else local e=q.entries[q.card];if e then excluded[entry_id(e)]=true end end
+  local upcoming={};for _,e in ipairs(queue) do if not excluded[entry_id(e)] then upcoming[#upcoming+1]=e end end
+  if #upcoming==0 then return end
+  kit.flow.prefetch_job={target=q,deck=deck,queue=upcoming,mode=mode,previous=previous_mode,co=coroutine.create(function()prepare_exercise();if exercise then kit.flow.warm_layout(exercise) end end),steps=0,input=kit.flow.input_serial or 0}
+  kit.flow.prefetch_schedule(80)
+end
 local function finish_exercise(force)
+  if storage_error then error(storage_error) end
+  if force then kit.tx.flush() end
   if not exercise or (not exercise.answered and not force) then return end
+  local staged=exercise.next_ready
+  kit.flow.cancel_prefetch(true)
+  kit.tx.rendered=false
   for key,e in pairs(exercise.saved) do
     for i=#queue,1,-1 do if entry_id(queue[i])==key then table.remove(queue,i) end end
     local rec=e.rec
     if rec and rec.due<=now_sec() then queue[#queue+1]={s=e.s,l=e.l} end
   end
   exercise=nil;shown=false;scroll=0
-  if #queue==0 then kit.flow.refill() end
+  if #queue==0 then kit.flow.refill()
+  elseif staged and staged.id==entry_id(queue[1]) then
+    exercise=staged.question;mode=staged.mode;previous_mode=staged.previous
+    kit.prompt_restore(exercise.prepared_prompt);exercise.prepared_prompt=nil
+  end
 end
 local function draw_exercise(gg)
   prepare_exercise(); local q=exercise
@@ -2104,8 +2534,9 @@ local function draw_exercise(gg)
     if boot_task then gg:text(20,160,'正在准备…',{font=kit.font('medium')}) end
     return
   end
+  kit.flow.prepare_next(q)
   local label=mode=='cloze' and '例句填空' or mode=='match' and '中英配对' or mode_names[mode]
-  gg:text(20,108,(random_mix and '随机组合 · ' or '')..label,{font=kit.font('small')})
+  gg:text(20,108,label,{font=kit.font('small')})
   if mode=='letters' then kit.letters.draw(gg,q)
   elseif mode=='match' then
     for i,c in ipairs(q.left) do
@@ -2572,16 +3003,10 @@ do
     kit.show({title='各词库进度',lines=#items==0 and {'尚未开始学习。'} or {},rows=rows,cancel=kit.close})
   end
   cumulative=function()
-    kit.close()
-    start_loading('统计学习进度',function()
-      local studied,due,wrong=0,0,0;local items={}
-      for _,d in ipairs(decks) do
-        boot_checkpoint();local count=summary(d);d.due=count
-        studied=studied+(d.studied or 0);due=due+count
-        wrong=wrong+#wrong_rows(d)
-        if (d.studied or 0)>0 then items[#items+1]=d end
-      end
-      local t=kv(sread('daily.txt'));local lastday=tonumber(t.lastday);local streak=tonumber(t.streak) or 0
+    local cached=kit.flow.summary_cache
+    local function present(data)
+      local studied,due,wrong,items,t=data.studied,data.due,data.wrong,data.items,data.t
+      local lastday=tonumber(t.lastday);local streak=tonumber(t.streak) or 0
       if not lastday or lastday<today()-1 then streak=0 end
       kit.show({title='累计学习',lines={
         '已学 '..studied..' 词条 · '..#items..' 本词库',
@@ -2591,7 +3016,28 @@ do
         {{'各词库进度',function()books_page(items)end}},
         {{'今日错词',function()today_errors()end},{'统计说明',summary_help}},
         {{'今日',function()show_today()end},{'关闭',kit.close}}},cancel=kit.close})
-    end)
+    end
+    if cached and cached.day==today() and cached.seq==P.load().seq and now_sec()<cached.expires then present(cached);return end
+    local function cancel()
+      boot_task=nil;boot_serial=boot_serial+1;boot_error=nil;ERR=nil
+      show_today()
+    end
+    kit.show({title='累计总结',lines={'正在整理总结…'},rows={{{'返回',cancel}}},cancel=cancel})
+    start_loading('统计学习进度',function()
+      local studied,due,wrong=0,0,0;local items={};local expires=now_sec()+300
+      for _,d in ipairs(decks) do
+        boot_checkpoint();local count=summary(d);d.due=count
+        studied=studied+(d.studied or 0);due=due+count
+        expires=math.min(expires,d.summary_refresh_at or expires)
+        local n=0
+        for _ in (sread(d.key..'_wrong.txt') or ''):gmatch('[^%s:]+:[^%s]+ %d+') do
+          wrong=wrong+1;n=n+1;if n%32==0 then boot_checkpoint() end
+        end
+        if (d.studied or 0)>0 then items[#items+1]=d end
+      end
+      local data={studied=studied,due=due,wrong=wrong,items=items,t=kv(sread('daily.txt')),day=today(),seq=P.load().seq,expires=expires}
+      kit.flow.summary_cache=data;present(data)
+    end,true)
   end
   show_today=function()
     local t=daily_stats();local raw=kv(sread('daily.txt'));local attempts=tonumber(raw.day)==today() and (tonumber(raw.first_attempts) or 0) or 0
@@ -2619,7 +3065,7 @@ end
 do
   local manage_menu,show_daily,run_management
   local function reload_management(target)
-    small_cache={};generations={};favorite_cache=nil
+    small_cache={};kit.flow.progress_cache=nil;generations={};favorite_cache=nil
     cache.key=nil;cache.rows=nil;file_cache.name=nil;file_cache.text=nil
     exercise=nil;last=nil;queue={};own={};own_prog={};dels={}
     library_query='';favorites_only=false;library_folder=nil;folder_pages={};page=0
@@ -2687,7 +3133,7 @@ do
       {{'自定义随机组合',random_settings}},
       {{'备份与重置',manage_menu}},
       {{'关于墨词',function()
-        kit.show({title='墨词 InkWords',lines={'版本：1.4.6 公开版','作者：WarlockDi','e99866@outlook.com','已安装词库：'..(#decks-1)..' 本','适用设备：阅星瞳 X4 Pro','中英文练习 · 本地保存进度'},rows={{{'返回设置',function()show_settings()end}}},cancel=function()show_settings()end})
+        kit.show({title='墨词 InkWords',lines={'版本：1.5.4 正式版','作者：WarlockDi','e99866@outlook.com','已安装词库：'..(#decks-1)..' 本','适用设备：阅星瞳 X4 Pro','中英文练习 · 本地保存进度'},rows={{{'返回设置',function()show_settings()end}}},cancel=function()show_settings()end})
       end}},
       {{'关闭',kit.close}}
     },cancel=kit.close})
@@ -2784,7 +3230,7 @@ function on_draw(c, gg)
       gg:line(240,242,240,300)
       gg:line(208,248,232,254);gg:line(248,254,272,248)
       gg:line(208,269,232,275);gg:line(248,275,272,269)
-      local title='墨词';local subtitle='InkWords'
+      local title='墨词';local subtitle='让每一次记忆，都留下痕迹。'
       gg:text((W-kit.width(kit.font('large'),title))//2,352,title,{font=kit.font('large')})
       gg:text((W-kit.width(kit.font('small'),subtitle))//2,410,subtitle,{font=kit.font('small')})
       local message='正在准备上次学习'
@@ -2838,7 +3284,8 @@ function on_draw(c, gg)
     if msg then gg:text(12, BTN_Y - 30, kit.short(msg, 46), { font = kit.font('small') }) end
     if ERR then gg:text(12, H - 24, kit.short('ERR ' .. ERR, 48), { font = kit.font('small') }) end
   end)
-  if not ok then ERR=tostring(e);pcall(function() gg:text(8, H - 60, kit.short('draw ERR ' .. tostring(e), 46)) end) end
+  if not ok then ERR=tostring(e);pcall(function() gg:text(8, H - 60, kit.short('draw ERR ' .. tostring(e), 46)) end)
+  else pcall(kit.tx.after_draw) end
 end
 
 local function in_rect(x, y, rx, ry, rw, rh) return x >= rx and x < rx + rw and y >= ry and y < ry + rh end
@@ -2893,6 +3340,7 @@ local function tap(x, y)
 end
 
 function on_input(c, ev)
+  if type(ev)=='table' and (ev.type=='key' or (ev.type=='pointer' and (ev.phase=='down' or ev.phase=='up'))) then kit.flow.input_serial=(kit.flow.input_serial or 0)+1 end
   if management_busy then return true end
   extend_budget()
   if (boot_task and not boot_quiet) or boot_error then
@@ -2907,6 +3355,17 @@ function on_input(c, ev)
     kit.refresh();return false
   end
   if type(ev)=='table' and ev.type=='pointer' and ev.phase=='down' then long_done=false;return true end
+  -- Movement and rejected key phases do not change the screen.
+  if type(ev)~='table' then return false end
+  if ev.type=='pointer' then
+    if ev.phase~='up' and ev.phase~='hold' and ev.gesture~='long' then return true end
+    if ev.phase=='hold' and long_done then return true end
+  elseif ev.type=='key' then
+    if ev.key=='back' then
+      if ev.phase~='up' and ev.phase~=nil then return true end
+    elseif not kit.key_accepted(ev) then return true end
+  else return false end
+  kit.flow.input_active=true
   ERR = nil
   local handled = true
   local ok, e = pcall(function()
@@ -2947,7 +3406,7 @@ function on_input(c, ev)
         return
       end
       tap(x, y)
-    elseif ev.type == 'key' and kit.key_accepted(ev) then
+    elseif ev.type == 'key' then
       if kit.modal() then
         return
       elseif screen == 'study' then
@@ -2966,6 +3425,7 @@ function on_input(c, ev)
   if not ok then ERR = tostring(e) end
   if ok and screen=="decks" then request_visible_summaries() end
   kit.refresh()
+  kit.flow.flush_refresh()
   return handled
 end
 
@@ -2975,7 +3435,7 @@ boot_step=function()
   local begin=kit.now_ms() or 0
   local finished=false
   -- Batch cheap checkpoints, but yield after 12 ms or 24 checkpoints.
-  for _=1,24 do
+  for _=1,(boot_stage=='统计学习进度' and 4 or 24) do
     local ok,err=coroutine.resume(boot_task)
     if not ok then boot_task=nil;boot_error=tostring(err);ERR=boot_error;kit.refresh();return end
     if coroutine.status(boot_task)=='dead' then boot_task=nil;finished=true;break end
@@ -2990,6 +3450,7 @@ boot_step=function()
   end
 end
 start_loading=function(label,fn,quiet)
+  if kit.flow.cancel_prefetch then kit.flow.cancel_prefetch() end
   if label=='准备练习' then exercise=nil;release_memory() end
   boot_serial=boot_serial+1
   boot_error=nil;boot_stage=label;boot_reads=0;boot_quiet=quiet or false
@@ -3013,20 +3474,23 @@ start_loading=function(label,fn,quiet)
 end
 
 function on_load(c)
+  kit.flow.left=false
   storage_error=nil;boot_error=nil;ERR=nil;boot_reads=0;boot_initial=true
   extend_budget()
   math.randomseed(kit.now_ms() or 1)
   local function initialize()
-    boot_stage='读取设置';P.load();load_settings()
+    boot_stage='恢复学习记录';kit.tx.recover();boot_stage='读取设置';P.load();load_settings()
     boot_stage='扫描词库';discover()
     boot_stage='读取学习进度';refresh_summaries()
   end
   start_loading('正在准备',initialize)
 end
 function on_leave()
+  pcall(kit.tx.flush)
+  kit.flow.left=true;kit.flow.cancel_prefetch()
   local loading=boot_task~=nil or boot_error~=nil
   boot_task=nil;boot_serial=boot_serial+1
-  if not loading then pcall(write_lock_cards) end
+  if not loading and not storage_error then pcall(write_lock_cards) end
 end
 
 if rawget(_G, '__TEST') then

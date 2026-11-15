@@ -4,11 +4,13 @@ import hashlib,json,subprocess,sys,zipfile
 import xtpack
 from PIL import Image
 root=Path(__file__).resolve().parent;app=root/'apps/inkwords';out=root/'dist';out.mkdir(exist_ok=True)
+subprocess.run([sys.executable,str(root/'tools/build_spelling_font.py')],check=True)
 subprocess.run([sys.executable,str(app/'bundle.py')],check=True)
 m=xtpack.validate_manifest(json.loads((app/'manifest.json').read_text(encoding='utf-8')),str(app))
 code=[(name,(app/name).read_bytes()) for name in ['index.lua','lockscreen.lua']]
 data=[(p.name,p.read_bytes()) for p in sorted((app/'data').glob('uf*.txt'))]
 assert len(data)==92,'Missing packaged font blocks'
+data += [('spelling_font.txt',(app/'data/spelling_font.txt').read_bytes())]
 data += [('font_notice.txt',(root/'licenses/FONT-COPYRIGHT.txt').read_bytes()),('font_license.txt',(root/'licenses/OFL-NotoSansCJK.txt').read_bytes()),('code_license.txt',(root/'LICENSE').read_bytes())]
 data += [(name,(app/'data'/name).read_bytes()) for name in ['demo_cards.txt','demo_examples.txt','demo_library.txt']]
 icon=xtpack.build_xic_1bpp(Image.open(app/'icon.png'));icons=xtpack.build_xtab([('app_icon_s',icon),('app_icon_l',icon)])

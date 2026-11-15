@@ -4,13 +4,19 @@
 
 官方仓库 / Official repository: https://github.com/WarlockDi/InkWords-X4Pro  
 联系 / Contact: **e99866@outlook.com**  
-当前公开版 / Public version: **1.4.6**
+当前公开版 / Public version: **1.5.4**
 
-[下载并安装 / Download app](https://github.com/WarlockDi/InkWords-X4Pro/raw/refs/heads/main/downloads/InkWords_1.4.6.xtapp) · [安装说明 / Installation](INSTALL.md) · [获取和导入词库 / Get decks](docs/VOCABULARY.md) · [来源与致谢 / Credits](THIRD_PARTY.md) · [贡献说明 / Contributors](CONTRIBUTORS.md) · [作者与转载 / Authorship](AUTHORSHIP.md)
+[下载并安装 / Download app](https://github.com/WarlockDi/InkWords-X4Pro/raw/refs/heads/main/downloads/InkWords_1.5.4.xtapp) · [安装说明 / Installation](INSTALL.md) · [获取和导入词库 / Get decks](docs/VOCABULARY.md) · [来源与致谢 / Credits](THIRD_PARTY.md) · [贡献说明 / Contributors](CONTRIBUTORS.md) · [作者与转载 / Authorship](AUTHORSHIP.md)
 
 ## 中文
 
 墨词针对阅星瞳 **X4 Pro、XTOS Licorice 26111201、480×800 竖屏**设计。它从个人使用需求出发，沿用设备现有交互方式，离线运行，不需要账号、网络、系统软键盘或后台服务。不是普通手机应用，也不是阅星瞳、Anki 或 MemDeck 的官方产品。
+
+### 1.5.4 更新
+
+优化答案反馈、配对与下一题响应；分段准备下一题并复用字形和排版，保留可靠的进度保存。改善词组间距、拼写结果提示和累计总结加载，原有布局保持不变。详见 [更新记录 / Changelog](CHANGELOG.md)。
+
+Improved answer feedback, matching and next-question responsiveness with bounded prefetch and layout/font reuse while preserving durable progress. Refined phrase spacing, spelling feedback and cumulative-summary loading without redesigning the interface.
 
 ### 功能
 
@@ -32,7 +38,7 @@
 
 ### 运行预览
 
-下图来自 **1.4.6 实际 Lua 程序在电脑测试环境中的绘图**，不是生成图片，也不是实机照片。使用公开包的开放许可字形资源；设备原生字体、刷新速度和残影可能不同。
+下图来自 **1.5.4 实际 Lua 程序在电脑测试环境中的绘图**，不是生成图片，也不是实机照片。使用公开包的开放许可字形资源；设备原生字体、刷新速度和残影可能不同。
 
 | 拼写 / Spelling | 双向配对 / Matching |
 | --- | --- |
@@ -40,17 +46,17 @@
 
 ### 验证范围
 
-见 [测试记录](docs/TESTING.md)。本次公开版尚未在实机上重新验收，不承诺无故障或兼容所有固件。程序只加载当前需要的数据，不把整套词库读进内存。
+见 [测试记录](docs/TESTING.md)。维护者已反馈个人设备上的响应有所改善。下列自动测试与预览来自电脑环境，不代表实机延迟或长期可靠性保证。程序只加载当前需要的数据，不把整套词库读进内存。
 
 ## English
 
 InkWords is a Chinese-interface, offline English vocabulary trainer for **XTEINK X4 Pro with XTOS Licorice 26111201**, using the existing 480×800 portrait UI. No account, network, background service or system keyboard is required.
 
-Features include bilingual multiple-choice quizzes, sentence cloze, adaptive letter spelling, bidirectional matching, flashcards, configurable mixed practice, local spaced repetition, deck categories, recent decks, summaries, wrong-word records and confirmed reset/restore operations. Easy spelling hides two letters except in two-letter words; at least one letter remains visible. Submitted letters and fixed underlines remain visible after answering, with the reference spelling below.
+Features include bilingual multiple-choice quizzes, sentence cloze, adaptive letter spelling, bidirectional matching, flashcards, configurable mixed practice, local spaced repetition, deck categories, recent decks, summaries, wrong-word records and confirmed reset/restore operations. Easy spelling hides two letters except in two-letter words; at least one letter remains visible. Submitted letters and fixed underlines remain visible after answering, with the reference spelling below only when incorrect or revealed.
 
 The review scheduler is adapted from the upstream FSRS 4.5 implementation with conservative evidence rules. It estimates familiarity; progress is not a mastery guarantee. Sentence cloze skips cards without a suitable example.
 
-The single `.xtapp` contains the app and **20 newly written demonstration cards**, initialized automatically on first launch, not the private 108-book collection or scraped dictionaries. Existing users install the same `.xtapp`; existing vocabulary and progress are preserved. No manual AppFiles copy is needed for first-time demo use. See [installation](INSTALL.md), [credits and data boundaries](THIRD_PARTY.md), and [test limitations](docs/TESTING.md). This public build has not yet been revalidated on hardware; other devices/firmware are unverified.
+The single `.xtapp` contains the app and **20 newly written demonstration cards**, initialized automatically on first launch, not the private 108-book collection or scraped dictionaries. Existing users install the same `.xtapp`; existing vocabulary and progress are preserved. No manual AppFiles copy is needed for first-time demo use. See [installation](INSTALL.md), [credits and data boundaries](THIRD_PARTY.md), and [test limitations](docs/TESTING.md). The maintainer reports improved responsiveness on their device. Automated timings and previews come from a desktop harness, not a hardware latency or endurance certification; other devices/firmware are unverified.
 
 ## 构建 / Build
 
@@ -61,7 +67,7 @@ python -m pip install -r requirements.txt
 python build.py
 ```
 
-Output: `dist/InkWords_1.4.6.xtapp` and `dist/InkWords_1.4.6_Public.zip`. The included generated font blocks are sufficient to build. To regenerate them, supply the Noto Sans CJK SC Bold OTF specified in `licenses/FONT-COPYRIGHT.txt` to `python tools/build_fonts.py --font PATH`.
+Output: `dist/InkWords_1.5.4.xtapp` and `dist/InkWords_1.5.4_Public.zip`. The included generated font blocks are sufficient to build. To regenerate them, supply the Noto Sans CJK SC Bold OTF specified in `licenses/FONT-COPYRIGHT.txt` to `python tools/build_fonts.py --font PATH`.
 
 ```sh
 python -m pip install -r requirements-dev.txt
