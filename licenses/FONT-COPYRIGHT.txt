@@ -1,0 +1,5 @@
+© 2014-2021 Adobe (http://www.adobe.com/).
+
+InkWords UI Font: bitmap rectangle conversion by WarlockDi; derived from Noto Sans CJK SC Bold. OFL-1.1.
+Source: https://github.com/notofonts/noto-cjk
+Source SHA256: b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a

@@ -1,0 +1,20 @@
+1	apple	释义：n. 苹果\n例句：I put an apple in my bag.\n译文：我把一个苹果放进包里。
+2	bridge	释义：n. 桥\n例句：The bridge connects the two villages.\n译文：这座桥连接两个村庄。
+3	calm	释义：adj. 平静的\n例句：The lake is calm this morning.\n译文：今天早晨湖面很平静。
+4	daily	释义：adj. 每日的\n例句：Reading is part of my daily routine.\n译文：阅读是我每日生活的一部分。
+5	energy	释义：n. 精力；能量\n例句：A short walk gives me energy.\n译文：散步一会儿让我有精神。
+6	focus	释义：v. 集中注意力\n例句：I focus on one task at a time.\n译文：我一次专注于一项任务。
+7	garden	释义：n. 花园\n例句：We planted flowers in the garden.\n译文：我们在花园里种了花。
+8	habit	释义：n. 习惯\n例句：Practice can become a useful habit.\n译文：练习可以成为有用的习惯。
+9	improve	释义：v. 改善；提高\n例句：Small changes can improve the result.\n译文：小小的改变可以改善结果。
+10	journey	释义：n. 旅程\n例句：Our journey begins at the station.\n译文：我们的旅程从车站开始。
+11	kind	释义：adj. 友善的\n例句：A kind neighbor helped us.\n译文：一位友善的邻居帮助了我们。
+12	learn	释义：v. 学习\n例句：We learn a little every day.\n译文：我们每天学一点。
+13	memory	释义：n. 记忆\n例句：Sleep is important for memory.\n译文：睡眠对记忆很重要。
+14	notice	释义：v. 注意到\n例句：Did you notice the new sign?\n译文：你注意到那块新标牌了吗？
+15	ocean	释义：n. 海洋\n例句：The ocean looks blue today.\n译文：今天海洋看起来是蓝色的。
+16	pillar	释义：n. 柱子；支柱\n例句：A stone pillar supports the roof.\n译文：一根石柱支撑着屋顶。
+17	quiet	释义：adj. 安静的\n例句：This is a quiet place to read.\n译文：这是个安静的阅读场所。
+18	review	释义：v. 复习\n例句：We review the words after lunch.\n译文：我们午饭后复习单词。
+19	stable	释义：adj. 稳定的\n例句：The table is stable on this floor.\n译文：这张桌子在这块地板上很稳。
+20	useful	释义：adj. 有用的\n例句：This is a useful tool for practice.\n译文：这是个有助于练习的工具。

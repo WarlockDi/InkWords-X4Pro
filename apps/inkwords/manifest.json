@@ -1,0 +1,15 @@
+{
+  "app_id": "inkwords",
+  "display_name": "墨词",
+  "version": "1.4.6",
+  "author": "WarlockDi; based on Omer Faruk Inel (MIT)",
+  "description": "中英文词汇学习、分类词库、间隔复习与本地备份。",
+  "entry": "index.lua",
+  "api": "2.0",
+  "permissions": [],
+  "lockscreen": {
+    "enabled": true,
+    "entry": "lockscreen.lua",
+    "interval_sec": 1800
+  }
+}

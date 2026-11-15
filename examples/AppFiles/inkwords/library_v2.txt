@@ -1,0 +1,2 @@
+INKWORDS_LIBRARY_3
+iwdemo1	墨词示例词库	通用与分级	1	20	600	1
