@@ -30,3 +30,11 @@ The generated glyph resources remain under OFL, not MIT. The package includes th
 | [rspeer/wordfreq](https://github.com/rspeer/wordfreq), [Princeton WordNet](https://wordnet.princeton.edu/) | Original upstream Anki built-in deck. The original deck is not included here, so this release does not relabel those datasets as MIT. |
 
 感谢以上作者和维护者。公开可访问的数据不自动取得再发布许可；代码的 MIT 许可也不覆盖第三方词书。已有用户的私有词库仍可在本地使用，本项目不会上传其学习记录。No affiliation, endorsement, or blanket redistribution permission is implied.
+
+## 离线词典 / Offline dictionary data (1.6.8)
+
+- ECDICT — skywind3000 and contributors, https://github.com/skywind3000/ECDICT, MIT. Selected English headwords, original definitions, phonetics and inflections; the one-edit suggestion index is derived from the selected common-word subset. License: AppFiles/inkwords/dict1_ecdict_license.txt.
+- CC-CEDICT — community contributors, https://www.mdbg.net/chinese/dictionary?page=cc-cedict, CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/). Converted and filtered Chinese-English data, including traditional aliases, remain CC BY-SA 4.0, not MIT. Changes and selection criteria are documented in AppFiles/inkwords/dict1_notice.txt. Original source URLs and checksums: docs/DICTIONARY_SOURCES.json.
+- IPA glyph additions — Noto Sans contributors, OFL-1.1. See licenses/DICTIONARY-FONT-NOTICE.txt. No font service or Windows font files are shipped.
+
+词典是查询资料，不是附带的108本考试词库。Dictionary data is for lookup; it is separate from the private 108-book study collection.

@@ -1,0 +1,2 @@
+Dictionary IPA glyphs derived from Noto Sans Regular, Copyright Google and the Noto project contributors. SIL Open Font License 1.1. Source: https://github.com/notofonts/noto-fonts/blob/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf
+See OFL-NotoSansCJK.txt for the SIL OFL 1.1 terms. Only selected rasterized IPA glyphs are included; the full font file is not distributed.

@@ -1,3 +1,9 @@
+# 1.6.8
+
+[详细中英文说明 / Detailed notes](docs/releases/1.6.8.md)
+
+Offline dictionary, persistent word-book pages, query/back/state retention and bounded pagination. Previous 1.6.3 remains available.
+
 # Version history / 版本说明
 
 ## 1.6.3 — 2026-11-16

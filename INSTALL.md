@@ -1,42 +1,44 @@
-# 安装 / Installation
+# 墨词 1.6.8 安装与升级 / Install and update
 
-适用于1.6.3公开版。 / For public release 1.6.3.
+作者：WarlockDi · e99866@outlook.com
 
-[下载 / Download](https://github.com/WarlockDi/InkWords-X4Pro/releases/tag/v1.6.3) · [更新说明 / Release notes](docs/releases/1.6.3.md)
+## 安装
 
-维护者 / Maintainer: **WarlockDi** · e99866@outlook.com  
-官方来源 / Official source: https://github.com/WarlockDi/InkWords-X4Pro
+如果已安装 1.6.6 或 1.6.7 且词典正常可用，只需将 InkWords_1.6.8.xtapp 复制到阅读器，安全弹出后打开文件覆盖安装。无需再复制词典，无需卸载或重置进度。
 
-## 已经安装墨词
+首次安装或缺少词典数据时，将 InkWords_1.6.8.xtapp 与 AppFiles 一起复制到阅读器根目录。AppFiles 合并覆盖，保留现有文件，不要删除整个文件夹。安全弹出后打开 xtapp 安装。
 
-1. 下载 `InkWords_1.6.3.xtapp`，退出墨词。
-2. 连接阅读器并进入 USB 文件传输模式。
-3. **只复制 `InkWords_1.6.3.xtapp` 到阅读器。**
-4. 安全弹出，退出 USB 模式，在阅读器文件列表打开 `.xtapp` 覆盖安装。
-5. 在“设置 → 关于墨词”确认版本 **1.6.3**、作者 **WarlockDi**。
+设置→关于墨词应显示 1.6.8。可直接更新，无需安装中间版本。
 
-无需先安装中间版本。不要卸载或重置进度。应用 ID 保持 `inkwords`，现有词库保持不变。私人学习记录不随公开包分发。较旧版本可能无法识别新进度字段，不建议降级。
+## 本次更新
 
-## 首次安装
+- 词典顶部词语和放大镜统一作为查询入口，删除底部“重新查询”。
+- 设备返回键和页面返回逐级返回，恢复原候选或词条页码。
+- 提交查询不主动刷新中间页；重复查询保留原页，不重复读取；取消或空输入保留页面。
+- 返回历史词条不改变最近查询顺序；拦截重复及过期输入回调。
+- 总结子页按来源返回；单页总结列表隐藏翻页，多页首尾不循环。
+- 重选当前错词筛选保留页码；重选当前题型保留当前题、队列和作答状态。
+- 词库搜索取消返回“更多”；相同搜索不重置页码或重复请求汇总。
+- 句子讲解单页隐藏翻页，多页到首尾停止。
 
-同样只安装一个 `.xtapp` 文件。首次打开“墨词”时，程序会自动创建内置示例词库，无需复制 AppFiles。进入“通用与分级 → 墨词示例词库”体验。
+保留既有词库、学习进度、单词本书签、字母拼写、双向配对及间隔复习功能。原有答题布局和进度保存逻辑保持不变。
 
-初始化仅在没有现有词库目录时执行；先写词条，校验后最后写目录。写入失败时可检查存储卡后重开，已有词库不会被自动替换。
+## 安装后重点检查
 
-示例库只有20条自行编写的词卡，不代表完整考试词库，也不是学习数量上限。添加其他词书请看 **[词库获取、转换和导入教程](docs/VOCABULARY.md)**，其中包括保留原词库的合并方法。额外词库导入目前仍需电脑操作。
+1. 点击词典顶部词语改查；从候选进入词条后按设备返回键。
+2. 输入后是否仍闪回查询页；取消输入是否保留原词条。
+3. 答题中打开题型选择，再选当前题型，已填字母或配对状态是否保留。
+4. 总结各子页返回、单页句子讲解以及长内容翻页。
+5. 做几题后正常退出重开，确认进度和单词本页码。
+
+电脑 Lua 运行、限内存、导航和保存故障检查不能替代实机刷新延迟及耗电测试。
+
+## 词典数据
+
+附带 625 个 dict1_*.txt 文件，与 1.6.6 完全一致。支持英汉/汉英精确和词首查询，以及部分常用英文词的一次字母编辑建议，不是整句翻译工具。词典来源和许可见 AppFiles/inkwords/dict1_notice.txt、dict1_ecdict_license.txt 与 THIRD_PARTY.md。字形来源见 licenses。
 
 ## English
 
-**Existing users:** download `InkWords_1.6.3.xtapp`, copy it to the reader, safely eject, and open it to install over the existing app. Do not uninstall or reset progress. Verify version 1.6.3 and WarlockDi in Settings → About.
+If the dictionary already works in version 1.6.6 or 1.6.7, install only InkWords_1.6.8.xtapp over the existing app. No data recopy, uninstall or progress reset is needed. For a first install, copy both the xtapp and AppFiles to the reader root, merging without deleting existing files, safely eject, then install the xtapp.
 
-**First installation:** install the same single `.xtapp`. The 20-card demonstration library is initialized automatically on first launch, only when no existing catalogue is present. No separate AppFiles copy is required. Other dictionaries must be supplied by the user with appropriate rights.
-
-See [Getting vocabulary decks](docs/VOCABULARY.md) for source links, CSV conversion and safe catalogue merging; additional decks currently require a computer.
-
-## 注意 / Notes
-
-- 本版本为 X4 Pro / XTOS Licorice 开发，其他固件与设备未验证。
-- 公开版更换为 OFL 开放字体，少数字形可能与1.4.5不同；功能及进度格式保持兼容。
-- 升级前可按设备支持的方式备份资料。复制 AppFiles 只备份词库，不一定包含应用私有进度。
-- 请先测试打开拼写、连续作答、返回词库和重启后的进度。遇到问题请提供版本、词库名、题型、操作步骤和照片，不要公开自己的完整学习记录。
-- Check `SHA256SUMS.txt` against the files from the official repository. Checksums detect file changes; they are not digital signatures or a guarantee of safety.
+This update unifies dictionary input at the query heading, removes the redundant requery action, fixes back navigation and pagination, avoids unnecessary intermediate query refreshes, preserves current exercises when selecting the same mode, and preserves search/filter state. Dictionary data is unchanged. Desktop verification does not measure real device latency or energy use. 

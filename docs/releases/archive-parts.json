@@ -1,0 +1,66 @@
+{
+  "name": "InkWords_1.6.8_Public.zip",
+  "sha256": "8d211d64ea43f22ff58e1e60383216360cf491101e6722301b4a17fd42d52430",
+  "parts": [
+    {
+      "path": "downloads/parts-1.6.8/000.part",
+      "sha256": "579f8c6270b72dcba3dde8bc5bf0d173c201b73c53d59d7c1e799a645c33b345"
+    },
+    {
+      "path": "downloads/parts-1.6.8/001.part",
+      "sha256": "75528cbeaaac049fc949af1e0e06d82bf153cd6372cb5e8f2eace203cfceef26"
+    },
+    {
+      "path": "downloads/parts-1.6.8/002.part",
+      "sha256": "cca56fb5be09c6719d40c841c6400c714670423528dced6e84384674ffc83f45"
+    },
+    {
+      "path": "downloads/parts-1.6.8/003.part",
+      "sha256": "f8613f1d95f04f2c8bb9833ffb77d7b525aa144d391853d02246105251187653"
+    },
+    {
+      "path": "downloads/parts-1.6.8/004.part",
+      "sha256": "32331ca63b3c2db6b6835d65317459fc2793ddf4a28fdc7a1a22aee0acbf73bf"
+    },
+    {
+      "path": "downloads/parts-1.6.8/005.part",
+      "sha256": "416f03304f0ecb13e0540fcb7893d45766c5cdd3db3deccb12a9d6da57dacc4b"
+    },
+    {
+      "path": "downloads/parts-1.6.8/006.part",
+      "sha256": "ccf5a33a543f523e0ac9d63ec2ef08d328a987dcaeb622a66449a702fabf4fa7"
+    },
+    {
+      "path": "downloads/parts-1.6.8/007.part",
+      "sha256": "93b3b32cd05bf8c50ae5447870356a4edf76aec51097c8f10fa2217adc35b313"
+    },
+    {
+      "path": "downloads/parts-1.6.8/008.part",
+      "sha256": "3f5133743e07d09a400b47c2d2b4bcb2f80ef2b2d1747c43d6d7bb112ba50b36"
+    },
+    {
+      "path": "downloads/parts-1.6.8/009.part",
+      "sha256": "4744f01afc48c7dc3488459a91a384f24e2173fdbcb1e085642363942f202304"
+    },
+    {
+      "path": "downloads/parts-1.6.8/010.part",
+      "sha256": "9b50d4bf047895bd1faed86c26c16aae344f52b0c91ee03773ae04275e0334fe"
+    },
+    {
+      "path": "downloads/parts-1.6.8/011.part",
+      "sha256": "ad33f44f31cc446d17bf93f8f5d2c8074fe6743eb83d8fa48ab0797683163cf3"
+    },
+    {
+      "path": "downloads/parts-1.6.8/012.part",
+      "sha256": "0f0992520a61099825dc98117822c6c96e9e8782c19170ca5863e648ea135f94"
+    },
+    {
+      "path": "downloads/parts-1.6.8/013.part",
+      "sha256": "f83937592052c7c12c5a89c16b2374cf38124f0e781e0f8ca90f7b67fb7408c6"
+    },
+    {
+      "path": "downloads/parts-1.6.8/014.part",
+      "sha256": "2d07c08367b99b7e04ad3cd748bf36bbe7174abde4b69f84914752b2b3c4f7e4"
+    }
+  ]
+}

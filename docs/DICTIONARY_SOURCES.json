@@ -1,0 +1,17 @@
+{
+  "ecdict.csv": {
+    "url": "https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.csv",
+    "bytes": 66009548,
+    "sha256": "d1ecbdf9ee2b920afb6f430ca6b6bb9f559588cf0dff86e04bd255f9390843cc"
+  },
+  "ECDICT-LICENSE": {
+    "url": "https://raw.githubusercontent.com/skywind3000/ECDICT/master/LICENSE",
+    "bytes": 1063,
+    "sha256": "f8552dd246f61a4e064569eae6194a01c6b3d63b03bf27c6ca863593c549ed0f"
+  },
+  "cedict.zip": {
+    "url": "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.zip",
+    "bytes": 3985471,
+    "sha256": "6c3476ad7465738e5f3b2ea1658769a755929eda7ccae0fbf5e03df0b5234453"
+  }
+}

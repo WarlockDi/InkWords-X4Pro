@@ -1,121 +1,70 @@
 # 墨词 InkWords · X4 Pro
 
-**由 WarlockDi 维护的离线中英文背单词工具。An offline bilingual vocabulary trainer maintained by WarlockDi.**
+**WarlockDi** · **e99866@outlook.com** · 当前公开版 / Current release: **1.6.8**
 
-官方仓库 / Official repository: https://github.com/WarlockDi/InkWords-X4Pro  
-联系 / Contact: **e99866@outlook.com**  
-当前公开版 / Public version: **1.6.3**
+针对阅星瞳 X4 Pro、XTOS Licorice 26111201、480×800竖屏的离线中英文学习小工具。离线查词与学习，无账号、联网依赖或后台服务；查词使用设备自带输入法。
+Offline bilingual vocabulary practice and dictionary lookup for XTEINK X4 Pro. No account or background service; lookup uses the device input method.
 
-[下载并安装 / Download app](https://github.com/WarlockDi/InkWords-X4Pro/releases/download/v1.6.3/InkWords_1.6.3.xtapp) · [安装说明 / Installation](INSTALL.md) · [获取和导入词库 / Get decks](docs/VOCABULARY.md) · [来源与致谢 / Credits](THIRD_PARTY.md) · [贡献说明 / Contributors](CONTRIBUTORS.md) · [作者与转载 / Authorship](AUTHORSHIP.md)
+[下载与详细更新 / Release](https://github.com/WarlockDi/InkWords-X4Pro/releases/tag/v1.6.8) · [安装 / Install](INSTALL.md) · [获取词库 / Get decks](docs/VOCABULARY.md) · [致谢 / Credits](THIRD_PARTY.md) · [作者与转载 / Authorship](AUTHORSHIP.md) · [贡献说明 / Contributors](CONTRIBUTORS.md)
 
-## 中文
+## 本版更新 / What's new
 
-墨词针对阅星瞳 **X4 Pro、XTOS Licorice 26111201、480×800 竖屏**设计。它从个人使用需求出发，沿用设备现有交互方式，离线运行，不需要账号、网络、系统软键盘或后台服务。不是普通手机应用，也不是阅星瞳、Anki 或 MemDeck 的官方产品。
+- 离线英汉/汉英词典、词首候选、常用英文拼写建议；顶部点词查词，逐级返回。
+- 单词本重启记页码；搜索结果显示条件与数量。
+- 重选当前题型/筛选保留作答和页码；取消搜索回到更多。
+- 总结子页返回一致；单页隐藏无效翻页，多页首尾停止。
+- 有上限的缓存与按需读取，保持原有学习保存机制。
 
-### 1.6.3 更新 / What's new
+Offline dictionary and limited fuzzy suggestions; persistent word-book pages; clearer search results; consistent back/cancel behaviour; same-mode state retention and bounded pagination. [完整中英文更新说明 / Full bilingual notes](docs/releases/1.6.8.md)
 
-本次汇总自公开版1.5.4以来的改动：
+## 安装与内容区别 / Installation and contents
 
-- 错题本、高频错词、累计总结增加可取消的阶段进度提示。
-- 跨词库错词保留各自来源、释义和掌握状态；双栏单词本支持总页数与翻页。
-- 重启复用校验后的错词索引，新增错词按需补读；减少大进度文件答题时的重复读取。
-- 更新设置、帮助与题型页面；目录提供“总结”，单页释义隐藏多余页码。
-- 包含1.6.1设备大整数启动错误修复，保留保存校验与恢复逻辑。
+| 情况 / Situation | 下载及操作 / Download and action |
+| --- | --- |
+| 1.6.6/1.6.7词典已可用 / Existing working dictionary | [仅安装 xtapp](https://github.com/WarlockDi/InkWords-X4Pro/releases/download/v1.6.8/InkWords_1.6.8.xtapp)，保留数据 / Update app only |
+| 首次使用或从1.6.3增加词典 / First install or adding lookup | [完整ZIP](https://github.com/WarlockDi/InkWords-X4Pro/releases/download/v1.6.8/InkWords_1.6.8_Public.zip)，合并复制AppFiles并安装xtapp / Merge AppFiles and install app |
 
-Cumulative changes since public 1.5.4: cancellable stage progress, source-aware cross-deck mistakes, paged word books, validated persistent indexes, fewer duplicate progress reads, refreshed navigation/help and the device numeric startup fix. First opens can still take several seconds.
+公开版与个人版使用同一程序。程序内含20条原创示例词卡，**不是只能学20个词**；已有词库与进度保留。公开ZIP另附约14.34 MB的许可词典数据，用于查词。个人108本考试/专业词书与抓取例句不公开附带，可按[词库指南](docs/VOCABULARY.md)自行导入有权使用的资料。
+The app is the same; public downloads include 20 original demo cards, not a study limit, and optional attributed lookup data. Private study books and personal progress are excluded. No uninstall/reset is needed.
 
-**[详细中英文更新说明 / Detailed bilingual release notes](docs/releases/1.6.3.md)** · [历史版本 / Releases](https://github.com/WarlockDi/InkWords-X4Pro/releases)
+## 功能 / Features
 
-### 功能
+英选中、中选英、例句填空、自适应拼写、双向配对、单词卡与随机组合；分类词库、最近练习、搜索收藏、错词复习、学习总结、每日新词不限量选项、确认后重置与恢复。基于上游FSRS实现加入保守记忆判定；“已学”不等于掌握。
+Bilingual quizzes, cloze, adaptive spelling, bidirectional matching, flashcards, mixed practice, deck browsing, mistake review, summaries and confirmed resets. Review scheduling estimates familiarity; it does not certify mastery.
 
-- 英选中、中选英、例句填空、拼写单词、双向配对、单词卡，以及可自选题型的随机组合。
-- 拼写自动难度：简单题两个空位；两个字母的词只挖一个空，始终保留可见字母。普通与挑战题最多五个空位、八个候选，重复字母可以重复点击。
-- 填写前后下划线长度和位置固定。答错时上方保留实际填写，下方显示正确拼写；长词按空间适配。
-- 配对既可以先点英文，也可以先点中文；配对后仍可查看单词和释义。
-- 基于上游 FSRS 4.5 的复习调度，增加保守的记忆证据规则；同轮重试、提前练习、配对末项排除不直接视为长期记住。
-- 词库分类、最近练习、继续学习、搜索、收藏、学习总结、错词记录、每日新词数量及无限制选项。
-- 本地保存进度，支持单词本/全部进度重置、恢复默认设置，以及最近一次重置备份恢复。重置需确认。
+## 运行预览 / Runtime previews
 
-“已学”百分比表示练习过的比例，不等于掌握率。记忆判定是软件估计，不是学习效果保证。例句填空跳过没有适用例句的词。
-
-### 安装与词库
-
-下载并安装上方 `.xtapp` 即可；首次打开自动准备内置示例词库，不需要另行复制 AppFiles。已有完整词库和学习进度直接沿用，程序不会用示例库覆盖它们。详见 [INSTALL.md](INSTALL.md)。
-
-公开包提供20条自行编写的中英示例词卡，用于体验所有题型，**不是只能学习20个词**。更多词库来源、下载、CSV转换和保留原词库的导入步骤，见 **[如何获取和导入词库](docs/VOCABULARY.md)**。个人版本使用过的108本词书及抓取例句不在此公开包中，原因见 [THIRD_PARTY.md](THIRD_PARTY.md)。这不影响你本机已有的词库。
-
-### 界面预览 / Runtime previews
-
-1.6.3实际Lua模拟运行截图，非AI生成、非实机照片。点击小图查看原图。模拟字体与设备可能不同。
-Actual Lua runtime captures, not AI-generated mockups or device photos. Click a thumbnail for full size; desktop fonts may differ.
+以下为当前1.6.8实际Lua程序运行绘图，非AI效果图、非实机照片。缩略图160px，点击查看原图。
+Current Lua runtime captures, not AI mockups or device photos; fonts and e-paper refresh can differ.
 
 <table>
 <tr>
-<td align="center">目录 / Directory<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/directory.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/directory.png" width="160" alt="目录 / Directory"></a></td>
-<td align="center">设置 / Settings<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/settings.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/settings.png" width="160" alt="设置 / Settings"></a></td>
-<td align="center">单词本 / Word book<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wordbook.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wordbook.png" width="160" alt="单词本 / Word book"></a></td>
+<td align="center">查词 / Dictionary<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/dictionary-home.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/dictionary-home.png" width="160" alt="查词 / Dictionary"></a></td>
+<td align="center">词首候选 / Prefix<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/dictionary-candidates.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/dictionary-candidates.png" width="160" alt="词首候选 / Prefix"></a></td>
+<td align="center">词条 / Entry<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/dictionary-detail.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/dictionary-detail.png" width="160" alt="词条 / Entry"></a></td>
 </tr>
 <tr>
-<td align="center">拼写 / Spelling<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/spelling.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/spelling.png" width="160" alt="拼写 / Spelling"></a></td>
-<td align="center">配对 / Matching<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/matching.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/matching.png" width="160" alt="配对 / Matching"></a></td>
-<td align="center">错题本 / Mistake book<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wrong-home.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wrong-home.png" width="160" alt="错题本 / Mistake book"></a></td>
+<td align="center">拼写建议 / Suggestions<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/dictionary-fuzzy.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/dictionary-fuzzy.png" width="160" alt="拼写建议 / Suggestions"></a></td>
+<td align="center">拼写练习 / Spelling<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/spelling.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/spelling.png" width="160" alt="拼写练习 / Spelling"></a></td>
+<td align="center">双向配对 / Matching<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/matching.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.8/docs/screenshots/matching.png" width="160" alt="双向配对 / Matching"></a></td>
 </tr>
 </table>
 
-<details>
-<summary>查看三个等待进度页面 / Show loading progress screens</summary>
 
-<table>
-<tr>
-<td align="center">错题本进度<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wrong-progress.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wrong-progress.png" width="150" alt="错题本进度"></a></td>
-<td align="center">高频错词进度<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/frequent-progress.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/frequent-progress.png" width="150" alt="高频错词进度"></a></td>
-<td align="center">累计总结进度<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/summary-progress.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/summary-progress.png" width="150" alt="累计总结进度"></a></td>
-</tr>
-</table>
+[更多页面 / More screens](docs/SCREENSHOTS.md)
 
-</details>
+## 稳定性与限制 / Validation and limitations
 
-### 验证范围
-
-见 [测试记录](docs/TESTING.md)。维护者已反馈1.6.3的本轮实机检查无问题；首次打开仍可能等待数秒。下列自动测试与预览来自电脑环境，不代表实机延迟或长期可靠性保证。程序只加载当前需要的数据，不把整套词库读进内存。
-
-## English
-
-InkWords is a Chinese-interface, offline English vocabulary trainer for **XTEINK X4 Pro with XTOS Licorice 26111201**, using the existing 480×800 portrait UI. No account, network, background service or system keyboard is required.
-
-Features include bilingual multiple-choice quizzes, sentence cloze, adaptive letter spelling, bidirectional matching, flashcards, configurable mixed practice, local spaced repetition, deck categories, recent decks, summaries, wrong-word records and confirmed reset/restore operations. Easy spelling hides two letters except in two-letter words; at least one letter remains visible. Submitted letters and fixed underlines remain visible after answering, with the reference spelling below only when incorrect or revealed.
-
-The review scheduler is adapted from the upstream FSRS 4.5 implementation with conservative evidence rules. It estimates familiarity; progress is not a mastery guarantee. Sentence cloze skips cards without a suitable example.
-
-The single `.xtapp` contains the app and **20 newly written demonstration cards**, initialized automatically on first launch, not the private 108-book collection or scraped dictionaries. Existing users install the same `.xtapp`; existing vocabulary and progress are preserved. No manual AppFiles copy is needed for first-time demo use. See [installation](INSTALL.md), [credits and data boundaries](THIRD_PARTY.md), and [test limitations](docs/TESTING.md). The maintainer reports the requested 1.6.3 device checks passed; first opens can still take several seconds. Automated timings and previews come from a desktop harness, not a hardware latency or endurance certification; other devices/firmware are unverified.
+[测试记录](docs/TESTING.md)。电脑测试不代表实机延迟或耗电；首次打开部分页面仍可能等待。系统输入法关闭时可能短暂露出原查词页，按用户决定保留现状。尚未完成1.6.8长期实机验证。
+Desktop tests do not measure hardware latency, power or endurance. First opens may take time; dismissing the system keyboard may briefly reveal the previous dictionary view. No blocking workaround has been introduced.
 
 ## 构建 / Build
 
-Python 3.10+:
+Python 3.10+：`pip install -r requirements-dev.txt`，然后 `python tools/prepare_downloads.py`、`python build.py`。公开词典分块从校验后的发布ZIP提取，用户不需要在设备转换数据。
+Run the commands above in a source checkout. Archive parts are transport files reassembled by the helper; install the Release ZIP, not individual parts.
 
-```sh
-python -m pip install -r requirements.txt
-python build.py
-```
+## 作者与来源 / Author and sources
 
-Output: `dist/InkWords_1.6.3.xtapp` and `dist/InkWords_1.6.3_Public.zip`. The included generated font blocks are sufficient to build. To regenerate them, supply the Noto Sans CJK SC Bold OTF specified in `licenses/FONT-COPYRIGHT.txt` to `python tools/build_fonts.py --font PATH`.
+维护者 / Maintainer: **WarlockDi** · **e99866@outlook.com**。代码MIT；字体OFL；词典分别按ECDICT MIT、CC-CEDICT CC BY-SA 4.0。请保留作者、许可与修改说明。OpenAI Codex辅助开发，不是人类贡献者账号。
 
-```sh
-python -m pip install -r requirements-dev.txt
-python tests/smoke.py
-python tools/lualint55.py apps/inkwords/src/main.lua
-```
-
-## 感谢 / Acknowledgements
-
-**WarlockDi** 负责需求、交互决策、维护和实机反馈；**OpenAI Codex** 协助开发、排查问题、模拟测试、文档和发布准备。详见 [贡献与 AI 辅助说明 / Contributors and AI assistance](CONTRIBUTORS.md)。
-
-- **Omer Faruk Inel / omer-faruq-xteink** — [touch-licorice-apps v0.24.0](https://github.com/omer-faruq-xteink/touch-licorice-apps/tree/v0.24.0): Anki mini-app foundation, gamekit, Lua host documentation and packaging tools. MIT notices retained.
-- **KFloyd.com / kycube** — [x4pro-emu](https://github.com/kycube/x4pro-emu): upstream Licorice container/packer implementation. MIT notice retained.
-- **doconline2026-cell** — [MemDeck](https://github.com/doconline2026-cell/memdeck): interaction ideas for multiple-choice, cloze and matching practice. No MemDeck binary is included.
-- **Anki and the open-spaced-repetition community** — [Anki](https://github.com/ankitects/anki), [FSRS](https://github.com/open-spaced-repetition/fsrs4anki): spaced-repetition concepts. InkWords is not Anki and does not synchronize with AnkiWeb.
-- **Adobe / Google / Noto contributors** — [Noto CJK](https://github.com/notofonts/noto-cjk): open-licensed source for the bundled InkWords UI Font, under OFL-1.1.
-- **lilinji, designfuchen, kajweb, KyleBing and LynnShaw** — vocabulary resources used or evaluated during personal development; scope and redistribution exclusions are documented in [THIRD_PARTY.md](THIRD_PARTY.md).
-
-InkWords-specific modifications: **Copyright © 2026 WarlockDi**. Application code is MIT-licensed; third-party licenses remain applicable. Please retain the author and upstream notices when copying or distributing the code. See [AUTHORSHIP.md](AUTHORSHIP.md).
-
+感谢 touch-licorice-apps、x4pro-emu、MemDeck、Anki/FSRS、Noto、ECDICT与CC-CEDICT作者。完整链接、变更及许可见 [THIRD_PARTY.md](THIRD_PARTY.md)。

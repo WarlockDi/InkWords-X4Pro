@@ -24,13 +24,14 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Verify source and public examples
         run: |
+          python tools/prepare_downloads.py
           python build.py
           python tests/smoke.py
           python tests/test_import.py
           python tests/test_digest.py
           python tests/test_progress.py
           python tools/lualint55.py apps/inkwords/src/main.lua
-      - name: Publish verified, device-tested package with detailed notes
+      - name: Publish verified package with detailed notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: python tools/publish_release.py

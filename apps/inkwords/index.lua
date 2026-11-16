@@ -2690,11 +2690,14 @@ show_sentence=function(q,page)
   local content=q.sentence and ('完整句子：\n'..q.sentence..'\n中文译文：\n'..(q.translation or '词库未提供句子译文'))
     or ''
   content=content..'\n答案：'..word(q.card)..'\n'..meaning(q.card)
-  local all=wrapped_text(content,400,'small');local pages=math.max(1,math.ceil(#all/9));page=math.min(page,pages)
+  local all=wrapped_text(content,400,'small');local pages=math.max(1,math.ceil(#all/9));page=math.max(1,math.min(page,pages))
   local visible={};for i=(page-1)*9+1,math.min(page*9,#all) do visible[#visible+1]=all[i] end
-  kit.show({title='句子讲解',keep_pending=true,lines=visible,rows={
-    {{'上一页',function() show_sentence(q,(page-2)%pages+1) end},{'下一页 '..page..'/'..pages,function() show_sentence(q,page%pages+1) end}},
-    {{'选项释义',function() show_details(q,q.selected or 1,1) end},{'返回题目',kit.close}}},cancel=kit.close})
+  local rows={}
+  if pages>1 then rows[#rows+1]={
+    {'上一页',function()show_sentence(q,page-1)end,page>1},
+    {'下一页 '..page..'/'..pages,function()show_sentence(q,page+1)end,page<pages}} end
+  rows[#rows+1]={{'选项释义',function()show_details(q,q.selected or 1,1)end},{'返回题目',kit.close}}
+  kit.show({title='句子讲解',keep_pending=true,lines=visible,rows=rows,cancel=kit.close})
 end
 show_details=function(q,index,page)
   local cards={}
@@ -2794,6 +2797,7 @@ choose_mode=function(d,switching)
     local row=i==1 and 1 or (i//2+1)
     rows[row]=rows[row] or {}
     rows[row][#rows[row]+1]={mode_names[chosen],function()
+      if switching and chosen==(random_mix and 'random' or mode) then kit.close();return end
       kit.close()
       kit.study.plan=nil;kit.previous={}
       if switching and exercise then finish_exercise(true) end
@@ -3065,7 +3069,8 @@ end
 
 do
   local cumulative,books_page,today_errors
-  local function summary_help()
+  local function summary_help(parent)
+    local back=parent or show_today
     kit.show({title='统计说明',lines={
       '已学按词库内练习过的词条统计。',
       '不同词库可能包含同一个单词。',
@@ -3073,7 +3078,7 @@ do
       '首次答对率仅统计今日首次作答，',
       '不含单词卡自评。错题保留最近60词。',
       '已学不等于掌握；重置会影响统计。',
-      '升级前当天的逐词数量无法补算。'},rows={{{'返回',function()show_today()end}}},cancel=kit.close})
+      '升级前当天的逐词数量无法补算。'},rows={{{'返回',back}}},cancel=back})
   end
   local function review_group(d,entries)
     kit.close()
@@ -3088,7 +3093,8 @@ do
       screen=#queue>0 and 'study' or 'done'
     end)
   end
-  today_errors=function(p)
+  today_errors=function(p,parent)
+    local back=parent or show_today
     local t=kv(sread('daily.txt'));local groups,order={},{}
     if tonumber(t.day)==today() then
       for key,sh,line in (t.errors or ''):gmatch('([%w]+):([%w]+):([^,]+)') do
@@ -3105,9 +3111,9 @@ do
         break
       end end
     end
-    rows[#rows+1]={{'上一页',function()today_errors((p-2)%pages+1)end},{'下一页 '..p..'/'..pages,function()today_errors(p%pages+1)end}}
-    rows[#rows+1]={{'返回总结',function()show_today()end}}
-    kit.show({title='今日错词',lines={#order==0 and '今天暂无错词。' or '按词库复习'},rows=rows,cancel=kit.close})
+    if pages>1 then rows[#rows+1]={{'上一页',function()today_errors(p-1,back)end,p>1},{'下一页 '..p..'/'..pages,function()today_errors(p+1,back)end,p<pages}} end
+    rows[#rows+1]={{'返回总结',back}}
+    kit.show({title='今日错词',lines={#order==0 and '今天暂无错词。' or '按词库复习'},rows=rows,cancel=back})
   end
   books_page=function(items,p)
     p=p or 1;local pages=math.max(1,math.ceil(#items/4));p=math.min(p,pages);local rows={}
@@ -3120,13 +3126,13 @@ do
           '进度 '..string.format('%.2f',percent)..'% · 待复习 '..(d.due or 0)},rows={
           {{'继续学习',function()kit.close();open_deck(d)end}},
           {{'复习错词',function()review_group(d,wrong_rows(d))end}},
-          {{'返回进度',function()books_page(items,p)end}}},cancel=kit.close})
+          {{'返回进度',function()books_page(items,p)end}}},cancel=function()books_page(items,p)end})
       end}}
 
     end
-    rows[#rows+1]={{'上一页',function()books_page(items,(p-2)%pages+1)end},{'下一页 '..p..'/'..pages,function()books_page(items,p%pages+1)end}}
+    if pages>1 then rows[#rows+1]={{'上一页',function()books_page(items,p-1)end,p>1},{'下一页 '..p..'/'..pages,function()books_page(items,p+1)end,p<pages}} end
     rows[#rows+1]={{'返回累计',function()cumulative()end}}
-    kit.show({title='词库进度',lines=#items==0 and {'尚未开始学习。'} or {},rows=rows,cancel=kit.close})
+    kit.show({title='词库进度',lines=#items==0 and {'尚未开始学习。'} or {},rows=rows,cancel=cumulative})
   end
   cumulative=function()
     local cached=kit.flow.summary_cache
@@ -3140,8 +3146,8 @@ do
         '学习 '..(tonumber(t.days) or 0)..' 天 · 连续 '..streak..' 天',
         '累计复习 '..(tonumber(t.review_total) or 0)..' 次'},rows={
         {{'词库进度',function()books_page(items)end}},
-        {{'今日错词',function()today_errors()end},{'统计说明',summary_help}},
-        {{'今日',function()show_today()end},{'关闭',kit.close}}},cancel=kit.close})
+        {{'今日错词',function()today_errors(nil,cumulative)end},{'统计说明',function()summary_help(cumulative)end}},
+        {{'今日',function()show_today()end},{'关闭',kit.close}}},cancel=function()show_today()end})
     end
     if cached and cached.day==today() and cached.seq==P.load().seq and now_sec()<cached.expires then present(cached);return end
     local function cancel()
@@ -3172,7 +3178,7 @@ do
     local rate=attempts>0 and string.format('%.0f%%',correct/attempts*100) or '暂无记录'
     kit.show({title='今日总结',lines={'新学 '..t.fresh..' 词条','复习 '..t.review..' 次 · 答错 '..t.wrong..' 次','首次答对率 '..rate},rows={
       {{'复习今日错词',function()today_errors()end}},
-      {{'累计总结',function()cumulative()end},{'统计说明',summary_help}},
+      {{'累计总结',function()cumulative()end},{'统计说明',function()summary_help()end}},
       {{'关闭',kit.close}}},cancel=kit.close})
   end
 end
@@ -3263,29 +3269,450 @@ do
       {{'新词顺序',toggle_new_order,value=new_word_order()=='random' and '随机' or '顺序'}},
       {{'组合题型',random_settings},{'使用帮助',function()kit.study.help(1,show_settings)end}},
       {{'备份与重置',manage_menu},{'关于墨词',function()
-        kit.show({title='墨词 InkWords',keep_pending=true,lines={'版本：1.6.3','作者：WarlockDi','e99866@outlook.com','已安装词库：'..(#decks-1)..' 本','适用设备：阅星瞳 X4 Pro'},rows={{{'返回设置',function()show_settings()end}}},cancel=function()show_settings()end})
+        kit.show({title='墨词 InkWords',keep_pending=true,lines={'版本：1.6.8','作者：WarlockDi','e99866@outlook.com','已安装词库：'..(#decks-1)..' 本','适用设备：阅星瞳 X4 Pro'},rows={{{'返回设置',function()show_settings()end}}},cancel=function()show_settings()end})
       end}},
       {{'返回',kit.close}}
     },cancel=kit.close})
   end
 end
 
+-- Optional offline dictionaries. Three bounded file reads; no startup load or progress writes.
+kit.dictionary={}
+function kit.dictionary.load_recent()
+  local D=kit.dictionary;if D.recent then return end
+  D.recent={};local ok,raw=pcall(function()return P.read('dictionary_recent.txt')end)
+  if ok and type(raw)=='string' and #raw<=1024 and utf8.len(raw) then
+    for line in lines(raw) do if line~='' and #line<=160 and #D.recent<6 then D.recent[#D.recent+1]=line end end
+  end
+end
+function kit.dictionary.remember(key)
+  local D=kit.dictionary;D.load_recent();if D.recent[1]==key then return end;local list={key}
+  for _,word in ipairs(D.recent) do if word~=key and #list<6 then list[#list+1]=word end end
+  D.recent=list;D.recent_dirty=true
+end
+function kit.dictionary.save_recent()
+  local D=kit.dictionary
+  if D.recent_dirty then
+    local value=table.concat(D.recent,'\n')
+    local ok,result=pcall(function()P.write('dictionary_recent.txt',value);return P.read('dictionary_recent.txt')==value end)
+    if ok and result then D.recent_dirty=false end
+  end
+end
+function kit.dictionary.enter()
+  local D=kit.dictionary
+  if screen~='dictionary' then D.return_screen=screen;screen='dictionary' end
+  kit.close();kit.flow.cancel_prefetch(true);D.load_recent()
+end
+function kit.dictionary.close()
+  local D=kit.dictionary
+  if D.busy then boot_task=nil;boot_serial=boot_serial+1;D.busy=false end
+  D.body=nil;D.query=nil;D.pages=nil;D.message_text=nil;D.phonetic=nil;D.phonetic_glyphs=nil;D.candidates=nil;D.candidate_kind=nil;D.candidate_origin=nil;D.read_cache=nil;D.candidate_parent=nil;D.index_cache=nil;D.input_serial=(D.input_serial or 0)+1
+  D.save_recent();D.navigation=nil
+  screen=D.return_screen or 'decks';D.return_screen=nil;kit.close()
+end
+function kit.dictionary.open()
+  local D=kit.dictionary;D.enter();D.navigation=nil;D.body=nil;D.pages=nil;D.query=nil;D.message_text=nil;D.phonetic=nil;D.phonetic_glyphs=nil;D.candidates=nil;D.candidate_kind=nil;D.candidate_parent=nil;D.candidate_origin=nil;D.read_cache=nil
+end
+-- Bounded navigation stores query metadata, never definition pages or raw data.
+function kit.dictionary.push()
+  local D=kit.dictionary;local nav=D.navigation or {};D.navigation=nav
+  if #nav>=6 then table.remove(nav,1) end
+  nav[#nav+1]={query=D.query,page=D.page,result=D.pages~=nil,
+    candidates=D.candidates,kind=D.candidate_kind,origin=D.candidate_origin,parent=D.candidate_parent,
+    message=D.message_text,lang=D.lang}
+end
+function kit.dictionary.back()
+  local D=kit.dictionary
+  if D.busy then boot_task=nil;boot_serial=boot_serial+1;D.busy=false end
+  D.input_serial=(D.input_serial or 0)+1
+  local nav=D.navigation;local previous=nav and table.remove(nav)
+  if not previous then
+    if D.query then D.open() else D.close() end
+    return
+  end
+  if not previous.query then D.open();return end
+  if previous.result then
+    D.search(previous.query,nil,previous)
+  else
+    D.query=previous.query;D.body=nil;D.pages=nil;D.phonetic=nil;D.phonetic_glyphs=nil;D.read_cache=nil
+    D.candidates=previous.candidates;D.candidate_kind=previous.kind;D.candidate_origin=previous.origin
+    D.candidate_parent=previous.parent;D.message_text=previous.message;D.lang=previous.lang
+  end
+end
+function kit.dictionary.input()
+  local D=kit.dictionary;if D.busy then return end;kit.close();D.input_serial=(D.input_serial or 0)+1;local serial=D.input_serial
+  ctx.input:text({title='输入英文或中文',text=D.query or '',max_bytes=160},function(_,value)
+    if kit.flow.left or screen~='dictionary' or serial~=D.input_serial then return end
+    D.input_serial=serial+1 -- Consume the callback once; ignore late duplicate submissions.
+    if value and value:find('[^ \t\r\n]') then D.search(value) end
+    -- The query completion requests the result frame; avoid flashing an intermediate page.
+    if not D.busy then kit.refresh() end
+  end)
+end
+function kit.dictionary.message(title,message)
+  local D=kit.dictionary;D.enter();D.body=nil;D.pages=nil;D.phonetic=nil;D.phonetic_glyphs=nil;D.message_text=title..'\n'..message
+end
+function kit.dictionary.read(name)
+  if not name or not name:match('^dict1_[ez][nh]_[%w]+%.txt$') then return nil end
+  local D=kit.dictionary
+  local lang=name:match('^dict1_([ez][nh])_root%.txt$')
+  local slot=lang and lang..'_root' or nil
+  if not slot then lang=name:match('^dict1_([ez][nh])_index%d+%.txt$');slot=lang and lang..'_index' or nil end
+  local cached=slot and D.index_cache and D.index_cache[slot]
+  if cached and cached.name==name then return cached.raw end
+  if D.read_cache and D.read_cache[name] then return D.read_cache[name] end
+  -- Keep headroom for the bounded file buffer and line parsing under the device heap cap.
+  local measured,used=pcall(function()return ctx.gc:count()end)
+  if measured and type(used)=='number' and used>820000 then pcall(function()ctx.gc:collect()end) end
+  local raw=files_read(name)
+  if type(raw)~='string' or #raw>24576 or raw:sub(-1)~='\n' or not utf8.len(raw) then return nil end
+  if slot and #raw<=8192 then
+    D.index_cache=D.index_cache or {};D.index_cache[slot]={name=name,raw=raw}
+  end
+  if D.read_cache and (D.cache_count or 0)<3 then D.read_cache[name]=raw;D.cache_count=(D.cache_count or 0)+1 end
+  return raw
+end
+function kit.dictionary.locate(raw,key)
+  local found
+  for line in lines(raw) do
+    local first,name=line:match('^([^\t]+)\t([^\t]+)$')
+    if not first then return nil end
+    if not found then found=name end
+    if first>key then break end
+    found=name
+  end
+  return found
+end
+function kit.dictionary.lookup(key,lang,alias)
+  local D=kit.dictionary
+  local name='dict1_'..lang..'_root.txt'
+  local root=D.read(name)
+  if not root then
+    -- Check existence only on failure; successful queries incur no extra file operation.
+    local ok,exists=pcall(function()return ctx.files:exists(name)end)
+    if ok and not exists then return nil,'缺少词典数据。\n请将更新文件夹中的 AppFiles\n合并复制到阅读器根目录。\n保留原有文件，无需重新安装。' end
+    return nil,'词典数据无法读取。\n请重新复制更新中的 AppFiles，\n安全弹出设备后重试。'
+  end
+  local group=D.read(D.locate(root,key));root=nil
+  if not group then return nil,'词典索引无法读取，请重新复制词典数据。' end
+  local leaf=D.read(D.locate(group,key));group=nil
+  if not leaf then return nil,'词典内容无法读取，请重新复制词典数据。' end
+  for row in lines(leaf) do
+    local word,body=row:match('^([^\t]+)\t(.*)$')
+    if word==key then
+      if body:sub(1,2)=='@=' then
+        if alias then return nil,'词典索引异常，请重新复制词典数据。' end
+        return D.lookup(body:sub(3),lang,true)
+      end
+      return (body:gsub('\\n','\n'))
+    end
+    if word and word>key then break end
+  end
+  return nil
+end
+function kit.dictionary.prefix(key,lang)
+  local D=kit.dictionary;local result={}
+  local root=D.read('dict1_'..lang..'_root.txt');if not root then return result end
+  local groupname=D.locate(root,key);local group=D.read(groupname);if not group then return result end
+  local leafname=D.locate(group,key);local nextname,nextfirst
+  local seen=false
+  for row in lines(group) do
+    local first,name=row:match('^([^\t]+)\t(.+)$')
+    if seen then nextname=name;nextfirst=first;break end
+    if name==leafname then seen=true end
+  end
+  if not nextname then
+    seen=false
+    for row in lines(root) do
+      local first,name=row:match('^([^\t]+)\t(.+)$')
+      if seen then
+        if first and first:sub(1,#key)==key then
+          local following=D.read(name)
+          if following then nextfirst,nextname=following:match('^([^\t]+)\t([^\n]+)') end
+        end
+        break
+      end
+      if name==groupname then seen=true end
+    end
+  end
+  for _,name in ipairs({leafname,nextfirst and nextfirst:sub(1,#key)==key and nextname or nil}) do
+    local raw=D.read(name)
+    if raw then for row in lines(raw) do
+      local word=row:match('^([^\t]+)\t')
+      if word and word~=key and word:sub(1,#key)==key then result[#result+1]=word;if #result==6 then return result end end
+    end end
+  end
+  return result
+end
+function kit.dictionary.one_edit(a,b)
+  local n,m=#a,#b;if math.abs(n-m)>1 then return false end
+  local i=1;while i<=math.min(n,m) and a:byte(i)==b:byte(i) do i=i+1 end
+  if n==m then
+    return (a:sub(i+1)==b:sub(i+1)) or (i<n and a:byte(i)==b:byte(i+1) and a:byte(i+1)==b:byte(i) and a:sub(i+2)==b:sub(i+2))
+  elseif n<m then return a:sub(i)==b:sub(i+1)
+  else return a:sub(i+1)==b:sub(i) end
+end
+function kit.dictionary.typos(key)
+  local D=kit.dictionary;local result={};local ranked={}
+  if not key:match('^[a-z]+$') or #key<3 or #key>18 then return result end
+  local first,last=key:byte(1),key:byte(-1)
+  for _,length in ipairs({#key,#key-1,#key+1}) do
+    if length>=3 and length<=18 then
+      local raw=D.read(string.format('dict1_en_f%02d.txt',length))
+      if raw then
+        local count=0
+        for row in lines(raw) do
+          count=count+1;if count>1000 then break end
+          local word,score=row:match('^([a-z]+)\t(%d+)$')
+          -- With at least three letters, one edit cannot change both endpoints.
+          if word and #word>=3 and (word:byte(1)==first or word:byte(-1)==last) and D.one_edit(key,word) then
+            score=tonumber(score)
+            local i=1;while i<=math.min(#key,#word) and key:byte(i)==word:byte(i) do i=i+1 end
+            if #word==#key+1 and i>1 and word:byte(i)==word:byte(i-1) then score=score-100000 end
+            if #word==#key and i<#key and key:byte(i)==word:byte(i+1) and key:byte(i+1)==word:byte(i) then score=score-100000 end
+            local position=1
+            while position<=#ranked and (ranked[position].score<score or (ranked[position].score==score and ranked[position].word<word)) do position=position+1 end
+            if position<=6 then
+              for j=math.min(6,#ranked+1),position+1,-1 do ranked[j]=ranked[j-1] end
+              ranked[position]={word=word,score=score}
+            end
+          end
+          if count%200==0 then boot_checkpoint() end
+        end
+      end
+    end
+  end
+  for _,entry in ipairs(ranked) do result[#result+1]=entry.word end
+  return result
+end
+function kit.dictionary.related()
+  local D=kit.dictionary
+  if D.candidate_origin and D.candidate_parent then
+    D.back();return
+  end
+  local query=D.query;if not query then return end
+  D.push()
+  D.pages=nil;D.body=nil;D.phonetic=nil;D.phonetic_glyphs=nil;D.busy=true
+  start_loading('查找相关词',function()
+    D.candidates=D.prefix(query,D.lang);D.candidate_kind='相关词';D.busy=false
+    if #D.candidates==0 then D.message('暂无相关词','可以输入单词开头，或重新查询。') end
+  end,true)
+end
+function kit.dictionary.search(value,origin,restore)
+  local D=kit.dictionary
+  local key=tostring(value or ''):gsub('[ \t\r\n]+',' '):gsub('^ ',''):gsub(' $',''):gsub('[A-Z]',string.lower)
+  -- Re-submitting the same query keeps the current result and page without disk I/O.
+  if not restore and not D.busy and key==D.query and (D.pages or (D.candidates and #D.candidates>0)) then return end
+  if not restore then D.push() end
+  D.enter();if not origin then D.candidate_parent=nil end;D.candidates=nil;D.candidate_kind=nil;D.candidate_origin=origin;D.query=key;D.body=nil;D.pages=nil;D.phonetic=nil;D.phonetic_glyphs=nil;D.message_text=nil
+  if not utf8.len(key) then D.query='';D.message('无法查询','请输入有效的中文或英文。');return end
+  if key=='' then D.open();return end
+  if #key>160 or key:find('[%z\1-\31]') then D.message('查询内容过长','请输入一个单词或词组。');return end
+  local lang='en'
+  for _,cp in utf8.codes(key) do if (cp>=0x3400 and cp<=0x9fff) or (cp>=0xf900 and cp<=0xfaff) or (cp>=0x20000 and cp<=0x323af) then lang='zh';break end end
+  D.lang=lang;D.busy=true;D.read_cache={};D.cache_count=0
+  start_loading('查询词典',function()
+    local body,err=D.lookup(key,lang)
+    if body then D.read_cache=nil;D.body=body;if not restore then D.remember(key) end;D.result(restore and restore.page or 1)
+      if restore then D.candidate_origin=restore.origin;D.candidate_parent=restore.parent end
+    elseif err then D.message('词典暂不可用',err)
+    else
+      D.candidates=D.prefix(key,lang);D.candidate_kind='匹配词条'
+      if #D.candidates==0 and lang=='en' then D.candidates=D.typos(key);D.candidate_kind='你是否想查' end
+      if #D.candidates==0 then D.message('未找到词条','试试单词开头，或检查拼写。') end
+    end
+    D.read_cache=nil;D.busy=false
+  end,true)
+end
+function kit.dictionary.result(page_)
+  local D=kit.dictionary
+  if not D.pages then
+    local pages={{}};local used=0
+    local labels={s='复数', ['3']='第三人称单数',i='现在分词',d='过去式',p='过去分词',r='比较级',t='最高级',['0']='原形'}
+    local forms=false
+    for raw in lines(D.body or '') do
+      if raw:sub(1,2)=='@P' then D.phonetic='['..raw:sub(3)..']'
+      else
+        local heading=raw=='#C' or raw=='#E' or raw=='#F'
+        local text=raw
+        if heading then
+          forms=raw=='#F';text=raw=='#C' and '中文释义' or (forms and '词形变化' or '英文释义')
+        elseif forms then local tag,value=raw:match('^([^:]+):(.*)$');if labels[tag] then text=labels[tag]..'：'..value end end
+        if text~='' then
+          local font=heading and 'small' or 'medium';local h=heading and 32 or 30
+          local wrapped=wrapped_text(text,432,font)
+          if heading and used>0 then used=used+16 end
+          if heading and used+62>420 then pages[#pages+1]={};used=0 end
+          for _,line in ipairs(wrapped) do
+            if used+h>420 then pages[#pages+1]={};used=0 end
+            pages[#pages][#pages[#pages]+1]={text=line,font=font,y=210+used,heading=heading};used=used+h
+          end
+        end
+      end
+    end
+    D.pages=pages;D.prepare_phonetic()
+  end
+  D.page=math.max(1,math.min(page_,#D.pages));kit.close()
+end
+function kit.dictionary.prepare_phonetic()
+  local D=kit.dictionary;if not D.phonetic or #D.phonetic>180 then return end
+  local glyphs,groups={},{}
+  for _,c in utf8.codes(D.phonetic) do glyphs[c]=false;groups[c//256]=true end
+  for block in pairs(groups) do
+    local reader
+    local ok=pcall(function()
+      reader=ctx.package:open_text(string.format('uf%04x.txt',block))
+      if not reader then return end
+      while true do
+        local line=reader:read_line();if not line then break end
+        local key,raw=line:gsub('\r$',''):match('^(%d+)\t(.*)$');key=tonumber(key)
+        if glyphs[key]==false then glyphs[key]=raw end
+      end
+    end)
+    if reader then pcall(function()reader:close()end) end
+    if not ok then return end
+  end
+  local miny,maxy,width=1000,0,0
+  for _,c in utf8.codes(D.phonetic) do
+    local raw=glyphs[c];if not raw or (#raw-1)%4~=0 then return end
+    width=width+raw:byte(1)-32
+    for i=2,#raw,4 do miny=math.min(miny,raw:byte(i+1)-33);maxy=math.max(maxy,raw:byte(i+1)+raw:byte(i+3)-66) end
+  end
+  local scale=math.min(0.5,432/math.max(1,width),22/math.max(1,maxy-miny))
+  D.phonetic_glyphs={chars=glyphs,scale=scale,top=miny}
+end
+function kit.dictionary.draw_phonetic(gg)
+  local D=kit.dictionary;local g=D.phonetic_glyphs
+  if not g then gg:text(24,178,fit_label(D.phonetic,432,'small'),{font=kit.font('small')});return end
+  local x=24;local scale=g.scale
+  for _,c in utf8.codes(D.phonetic) do
+    local raw=g.chars[c]
+    for i=2,#raw,4 do
+      local a,b,w,h=raw:byte(i,i+3);a=a-33;b=b-33;w=w-33;h=h-33
+      gg:rect(x+math.floor(a*scale),178+math.floor((b-g.top)*scale),math.max(1,math.floor((a+w)*scale)-math.floor(a*scale)),math.max(1,math.floor((b+h)*scale)-math.floor(b*scale)),{fill=true})
+    end
+    x=x+math.floor((raw:byte(1)-32)*scale)
+  end
+end
+function kit.dictionary.action(gg,x,y,w,label)
+  local font=kit.font('small')
+  gg:text(x+(w-kit.width(font,label))//2,y+19,label,{font=font})
+end
+function kit.dictionary.arrow(gg,y)
+  gg:line(441,y+6,447,y+12);gg:line(447,y+12,441,y+18)
+end
+function kit.dictionary.search_icon(gg,x,y)
+  for radius=9,10 do
+    for i=0,15 do
+      local a,b=i*math.pi/8,(i+1)*math.pi/8
+      gg:line(math.floor(x+radius*math.cos(a)),math.floor(y+radius*math.sin(a)),math.floor(x+radius*math.cos(b)),math.floor(y+radius*math.sin(b)))
+    end
+  end
+  gg:line(x+7,y+7,x+16,y+16);gg:line(x+8,y+6,x+17,y+15)
+end
+function kit.dictionary.draw(gg)
+  local D=kit.dictionary
+  gg:text(24,26,'词典',{font=kit.font('large')})
+  local subtitle='英汉 · 汉英';local sf=kit.font('small')
+  gg:text(456-kit.width(sf,subtitle),34,subtitle,{font=sf})
+  if D.query and D.query~='' then
+    local font=kit.width(kit.font('large'),D.query)>390 and 'medium' or 'large'
+    text_in_box(gg,D.query,24,106,390,60,font,false,2)
+    D.search_icon(gg,438,124)
+    if D.phonetic then D.draw_phonetic(gg) end
+  end
+  if D.busy then gg:text(24,230,'正在查询…',{font=kit.font('medium')})
+  elseif D.pages then
+    for _,row in ipairs(D.pages[D.page]) do
+      gg:text(24,row.y,row.text,{font=kit.font(row.font)})
+      if row.heading then gg:text(25,row.y,row.text,{font=kit.font(row.font)}) end
+    end
+    if #D.pages>1 then
+      if D.page>1 then D.action(gg,12,650,148,'上一页') end
+      local label=D.page..' / '..#D.pages
+      gg:text((480-kit.width(sf,label))//2,669,label,{font=sf})
+      if D.page<#D.pages then D.action(gg,320,650,148,'下一页') end
+    end
+  elseif D.candidates and #D.candidates>0 then
+    gg:text(24,184,D.candidate_kind,{font=sf})
+    for i,word in ipairs(D.candidates) do
+      local y=232+(i-1)*66;gg:text(24,y,fit_label(word,396,'medium'),{font=kit.font('medium')});D.arrow(gg,y)
+    end
+  elseif D.message_text then text_in_box(gg,D.message_text,24,222,432,380,'medium',false,10)
+  else
+    D.search_icon(gg,35,130)
+    gg:text(66,116,'查词',{font=kit.font('large')})
+    gg:line(24,164,456,164)
+    gg:text(24,214,'最近查询',{font=sf})
+    if #(D.recent or {})==0 then gg:text(24,266,'查过的单词会显示在这里。',{font=sf}) end
+    for i,word in ipairs(D.recent or {}) do
+      local y=262+(i-1)*62;gg:text(24,y,fit_label(word,396,'medium'),{font=kit.font('medium')});D.arrow(gg,y)
+    end
+  end
+  gg:line(24,716,456,716)
+  if D.busy then D.action(gg,12,724,456,'取消查询')
+  elseif D.pages and not D.candidate_origin then
+    D.action(gg,12,724,222,'相关词');D.action(gg,246,724,222,'返回')
+  else D.action(gg,12,724,456,D.query and '返回' or '返回目录') end
+end
+function kit.dictionary.turn(delta)
+  local D=kit.dictionary
+  if D.pages and D.page+delta>=1 and D.page+delta<=#D.pages then D.result(D.page+delta)
+  else kit.flow.no_refresh=true end
+end
+function kit.dictionary.tap(x,y)
+  local D=kit.dictionary
+  if y>=724 and y<784 then
+    if x<12 or x>=468 then kit.flow.no_refresh=true;return end
+    if D.busy then D.back()
+    elseif D.pages and not D.candidate_origin then
+      if x<234 then D.related() elseif x>=246 then D.back() else kit.flow.no_refresh=true end
+    else D.back() end
+  elseif D.busy then return
+  elseif D.query and y>=100 and y<176 and x>=24 and x<456 then D.input()
+  elseif y>=650 and y<706 and D.pages and #D.pages>1 then
+    if x<160 then D.turn(-1) elseif x>=320 then D.turn(1) end
+  elseif not D.query then
+    if y>=100 and y<176 and x>=24 and x<456 then D.input();return end
+    local i=math.floor((y-262)/62)+1
+    if x>=24 and x<456 and y>=262 and i<=6 and D.recent and D.recent[i] then D.search(D.recent[i]) end
+  elseif D.candidates and x>=24 and x<456 then
+    local i=math.floor((y-232)/66)+1
+    if y>=232 and i<=6 and D.candidates[i] then
+      D.candidate_parent={words=D.candidates,kind=D.candidate_kind};D.search(D.candidates[i],D.query)
+    end
+  end
+end
+function kit.flow.clear_library_search()
+  library_query='';favorites_only=false;library_folder=nil;page=0;kit.flow.draw_view=nil;kit.close();request_visible_summaries()
+end
+function kit.flow.search_library(value)
+  if not value then return end
+  local query=value:gsub('^[ \t\r\n]+',''):gsub('[ \t\r\n]+$','')
+  if query==library_query and not favorites_only then kit.refresh();return end
+  library_query=query;favorites_only=false;page=0;kit.flow.draw_view=nil
+  request_visible_summaries();kit.refresh()
+end
 local function library_tools()
   kit.show({title='更多',rows={
-    {{'高频错词',function()kit.study.open(true)end}},
+    {{'学习总结',show_today},{'高频错词',function()kit.study.open(true)end}},
     {{'搜索词库',function()
-      kit.close();ctx.input:text({title='搜索词库名称',text=library_query,max_bytes=100},function(_,s)
-        if s then library_query=s;page=0 end;request_visible_summaries();kit.refresh()
+      kit.close();kit.flow.library_input_serial=(kit.flow.library_input_serial or 0)+1
+      local serial=kit.flow.library_input_serial
+      ctx.input:text({title='搜索词库名称',text=library_query,max_bytes=100},function(_,s)
+        if kit.flow.left or screen~='decks' or serial~=kit.flow.library_input_serial then return end
+        kit.flow.library_input_serial=serial+1
+        if s then kit.flow.search_library(s) else library_tools();kit.refresh() end
       end)
     end},{favorites_only and '显示全部' or '只看收藏',function() favorites_only=not favorites_only;page=0;kit.close() end}},
-    {{'清除搜索',function() library_query='';favorites_only=false;page=0;kit.close() end}},
+    {{library_query~='' and '返回目录' or '清除筛选',kit.flow.clear_library_search}},
 {{'关闭',kit.close}}
   },cancel=kit.close})
 end
 
 local function draw_decks(gg)
   local decks=library_view()
-  if #decks==0 then gg:text(24,140,'未找到词库，可在“更多”中清除筛选。',{font=kit.font('small')}) end
+  if #decks==0 then gg:text(24,140,'未找到词库，请返回目录重新搜索。',{font=kit.font('small')}) end
   local first=page*ROWS+1
   for k=first,math.min(#decks,first+ROWS-1) do
     local d=decks[k];local y=TOP+(k-first)*ROW_H
@@ -3301,6 +3728,7 @@ local function draw_decks(gg)
   end
 end
 local help_pages={
+  {'查词与搜索','词典支持英汉、汉英离线查询。','输入词首可查候选，点词条看释义。','英文拼写建议仅覆盖常用词。','最近查询保留六条，退出时保存。','词典需复制更新中的 AppFiles 数据。','更多中可搜索词库、查看学习总结。','单词本正常退出时记住阅读页码。'},
   {'学习与进度','首页可继续上次学习。','最近练习保留最近五本词库。','每日新词可选数量或无限制。','今日已学按本词库不同词条计数。','升级前当天的逐词数量无法补算。','已学比例不等于掌握程度。'},
   {'题型与回看','菜单中可切换练习题型。','随机组合使用设置中勾选的题型。','拼写直接点字母，无需键盘。','配对可先点中文，也可先点英文。','上一题只回看，不撤销或重复计分。'},
   {'词表与释义','菜单中的单词本可浏览整本词库。','左右两列为英文和中文释义。','底部显示当前页与总页数。','可点按钮或用设备翻页键翻页。','长释义点开看完整内容。','答题后可查看各选项释义及例句。'},
@@ -3321,8 +3749,8 @@ kit.study.help=show_help
 
 local DECK_BUTTONS = {
   { function() return '设置' end,show_settings },
-  { function() return '更多' end, library_tools },
-  { function() return '总结' end,show_today },
+  { function() return library_query~='' and '返回目录' or '更多' end, function()if library_query~='' then kit.flow.clear_library_search() else library_tools() end end },
+  { function() return '词典' end,kit.dictionary.open },
   { function() return '页 ' .. (page + 1) .. '/' .. math.max(1, math.ceil(#library_view() / ROWS)) end, function()
       page = (page + 1) % math.max(1, math.ceil(#library_view() / ROWS))
     end },
@@ -3861,6 +4289,7 @@ function kit.study.options(list)
   for _,label in ipairs({'全部','未掌握','已掌握'}) do
     local chosen=label
     rows[#rows+1]={{label..(R.filter==label and '（已选）' or ''),function()
+      if R.filter==chosen then if list then kit.close() else R.home() end;return end
       R.filter=chosen;R.page=1;R.starts={0};if list then R.list(false) else R.home() end
     end}}
   end
@@ -3902,16 +4331,47 @@ function kit.study.read_own_refs(d)
   end
   return result
 end
+-- Reading bookmarks are optional UI state, separate from answer transactions.
+function kit.study.save_book_position()
+  local R=kit.study
+  if screen~='wordlist' or not R.ordinary or not R.book_deck then return end
+  local value=R.book_signature..'\n'..R.page
+  if value==R.book_saved then return end
+  local ok,result=pcall(function()
+    local name=R.book_deck.key..'_bookmark.txt'
+    P.write(name,value)
+    return P.read(name)==value
+  end)
+  if ok and result then R.book_saved=value end
+end
 function kit.study.book(d)
   local R=kit.study;R.book_deck=d
-  local deleted=sread(d.key..'_del.txt') or '';local hash=0
-  for i=1,#deleted do hash=(hash*131+deleted:byte(i))%65521 end
-  R.book_signature=tostring(d.cards)..':'..#deleted..':'..hash
-  local saved=R.book_position
-  if saved and saved.key==d.key and saved.generation==P.load().seq and saved.signature==R.book_signature then
-    R.page=saved.page;R.starts=saved.starts
-  else R.page=1;R.starts={0} end
+  local deleted=sread(d.key..'_del.txt') or ''
   R.own_refs=d.source=='own' and R.read_own_refs(d) or nil
+  local total=R.own_refs and #R.own_refs or d.cards
+  R.book_signature=tostring(total)..':'..R.digest(deleted)
+  if R.own_refs then R.book_signature=R.book_signature..':'..R.digest(sread(d.key..'_own.txt') or '') end
+  local raw=sread(d.key..'_bookmark.txt') or ''
+  local signature,page=raw:match('^([^\n]+)\n(%d+)$')
+  page=tonumber(page)
+  if signature~=R.book_signature or not page or page<1 or page>math.max(1,math.ceil(total/8)) then page=1 end
+  R.page=page;R.starts={0};R.book_saved=raw
+  if deleted=='' or R.own_refs then
+    for n=2,page do R.starts[n]=(n-1)*8 end
+  else
+    local removed={};for id in deleted:gmatch('%S+') do removed[id]=true end
+    local count=0
+    for index=0,total-1 do
+      if not removed[tostring(index//d.per)..':'..tostring(index%d.per)] then
+        if count>0 and count%8==0 then
+          R.starts[#R.starts+1]=index
+          if #R.starts==page then break end
+        end
+        count=count+1
+      end
+    end
+    R.page=math.min(page,#R.starts)
+  end
   R.list(true)
 end
 function kit.study.list(ordinary)
@@ -3958,8 +4418,7 @@ function kit.study.list(ordinary)
   end
 end
 function kit.study.close()
-  local R=kit.study;kit.close();screen=R.return_screen or 'decks'
-  if R.ordinary then R.book_position={key=R.book_deck.key,page=R.page,starts=R.starts,generation=P.load().seq,signature=R.book_signature} end
+  local R=kit.study;R.save_book_position();kit.close();screen=R.return_screen or 'decks'
   R.visible=nil;R.own_refs=nil
   if not R.ordinary then R.home() end
 end
@@ -4058,10 +4517,16 @@ function on_draw(c, gg)
   local ok, e = pcall(function()
     kit.flow.draw_view=screen=='decks' and build_library_view() or nil
     gg:clear(0)
+    if screen=='dictionary' then kit.dictionary.draw(gg);return end
     if screen=='wordlist' then kit.study.draw(gg);if kit.modal() then kit.draw_modal(gg) end;return end
     if screen == 'decks' then
-      gg:text(12, 12, '墨词 InkWords', { font = kit.font('large') })
+      gg:text(12,12,library_query~='' and '搜索结果' or '墨词 InkWords',{font=kit.font('large')})
+      if library_query~='' then
+        local suffix=' · 找到 '..#library_view()..' 本词库'
+        gg:text(12,52,fit_label('搜索“'..library_query..'”',W-24-kit.width(kit.font('small'),suffix),'small')..suffix,{font=kit.font('small')})
+      else
       gg:text(12, 52, ((boot_task and not boot_quiet) and (management_busy and '正在保存备份与设置…' or '正在打开词书…') or ('每日新词：' .. kit.flow.daily_label())), { font = kit.font('small') })
+      end
     else
       -- the deck name, shortened to end before the Menu button
       local f, name = kit.font('medium'), deck.name
@@ -4131,6 +4596,7 @@ end
 
 local function tap(x, y)
   if kit.tap_modal(x, y) then return end
+  if screen=='dictionary' then kit.dictionary.tap(x,y);return end
   if screen=='wordlist' then kit.study.tap(x,y);return end
   if screen == 'decks' then
     for k, b in ipairs(DECK_BUTTONS) do
@@ -4201,11 +4667,12 @@ function on_input(c, ev)
       if ev.phase ~= 'up' and ev.phase ~= nil then return end
       if kit.modal() then
         if kit.modal().cancel then kit.modal().cancel() end
+      elseif screen=='dictionary' then kit.dictionary.back()
       elseif screen=='wordlist' then kit.study.close()
       elseif kit.previous.viewing then kit.previous.restore()
       elseif screen ~= 'decks' then show_decks()
+      elseif library_query~='' or favorites_only then kit.flow.clear_library_search()
       elseif library_folder then navigate_folder(nil)
-      elseif library_query~='' or favorites_only then library_query='';favorites_only=false;page=0
       else handled = false end
       return
     end
@@ -4236,6 +4703,9 @@ function on_input(c, ev)
     elseif ev.type == 'key' then
       if kit.modal() then
         kit.flow.no_refresh=true;return
+      elseif screen=='dictionary' then
+        if ev.key=='right' or ev.key=='down' then kit.dictionary.turn(1)
+        elseif ev.key=='left' or ev.key=='up' then kit.dictionary.turn(-1) end
       elseif screen=='wordlist' then
         if ev.key=='right' or ev.key=='down' then kit.study.tap(350,740)
         elseif ev.key=='left' or ev.key=='up' then kit.study.tap(50,740) end
@@ -4255,6 +4725,7 @@ function on_input(c, ev)
   end)
   if not ok then ERR = tostring(e) end
   if ok and screen=="decks" then request_visible_summaries() end
+  if screen=='dictionary' and kit.dictionary.busy then kit.flow.no_refresh=true end
   if not kit.flow.no_refresh then kit.refresh() end
   kit.flow.flush_refresh()
   return handled
@@ -4334,6 +4805,8 @@ function on_load(c)
 end
 function on_leave()
   pcall(kit.tx.flush)
+  pcall(kit.dictionary.save_recent)
+  pcall(kit.study.save_book_position)
   kit.study.header_job=nil;kit.flow.left=true;kit.flow.cancel_prefetch()
   local loading=boot_task~=nil or boot_error~=nil
   boot_task=nil;boot_serial=boot_serial+1
@@ -4341,7 +4814,7 @@ function on_leave()
 end
 
 if rawget(_G, '__TEST') then
-  __TEST.api = { debug_flow=kit.flow,study=kit.study, previous=function()return kit.previous end, profile=function()return P.load()end, loading_visible=function() return boot_task~=nil and not boot_quiet end, loading=function() return boot_task~=nil end, boot_error=function() return boot_error end, error=function() return ERR end,
+  __TEST.api = { dictionary=kit.dictionary,search_library=kit.flow.search_library,debug_flow=kit.flow,study=kit.study, previous=function()return kit.previous end, profile=function()return P.load()end, loading_visible=function() return boot_task~=nil and not boot_quiet end, loading=function() return boot_task~=nil end, boot_error=function() return boot_error end, error=function() return ERR end,
     exercise=function() return exercise end, current_mode=function() return mode end, mode=function(m) random_mix=m=='random'; previous_mode=nil; mode=random_mix and 'quiz' or m; exercise=nil end, choose=choose_answer, finish=finish_exercise,
     screen = function() return screen end, decks = function() return decks end, deck = function() return deck end,
     queue = function() return queue end, state = function() return st end, shown = function() return shown end,

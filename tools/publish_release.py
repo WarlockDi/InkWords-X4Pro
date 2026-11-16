@@ -19,7 +19,7 @@ with zipfile.ZipFile(root/'downloads'/f'InkWords_{version}_Public.zip') as z:
     assert z.testzip() is None and z.read(f'InkWords_{version}.xtapp')==files[f'InkWords_{version}.xtapp']
 files['SHA256SUMS.txt']=(root/'downloads/SHA256SUMS.txt').read_bytes()
 notes=(root/'docs/releases'/f'{version}.md').read_text(encoding='utf-8')
-assert '## 中文' in notes and '## English' in notes and 'screenshots/summary-progress.png' in notes
+assert '## 中文' in notes and '## English' in notes and 'screenshots/dictionary-home.png' in notes
 if '--verify-only' in sys.argv:
     print('PASS publication inputs: tested app, source digest, archive, bilingual notes and screenshots');sys.exit(0)
 repo=os.environ['GITHUB_REPOSITORY'];assert repo=='WarlockDi/InkWords-X4Pro'
@@ -34,7 +34,7 @@ releases=api('/releases?per_page=100');matches=[r for r in releases if r['tag_na
 if matches:
     release=matches[0]
 else:
-    release=api('/releases','POST',{'tag_name':tag,'target_commitish':commit,'name':'墨词 InkWords '+version+' · 错词复习与加载进度 / Review & loading progress','body':notes,'draft':True,'prerelease':False})
+    release=api('/releases','POST',{'tag_name':tag,'target_commitish':commit,'name':'墨词 InkWords '+version+' · 离线词典与交互优化 / Dictionary & navigation','body':notes,'draft':True,'prerelease':False})
 for name,payload in files.items():
     existing=next((a for a in release['assets'] if a['name']==name),None)
     expected='sha256:'+hashlib.sha256(payload).hexdigest()

@@ -11,7 +11,7 @@ for all in [False,True]:
     g.api.study.open(all,d);pump(g)
     assert '开始复习' in g.texts()
     g.tap_label('返回')
-g.tap_label('总结');g.tap_label('累计总结')
+g.tap_label('更多');g.tap_label('学习总结');g.tap_label('累计总结')
 assert g.api.loading() and '统计词库' in g.texts()
 g.tap_label('返回');pump(g);assert '今日总结' in g.texts()
 g.tap_label('累计总结');pump(g)
