@@ -1,17 +1,21 @@
 # 安装 / Installation
 
+适用于1.6.3公开版。 / For public release 1.6.3.
+
+[下载 / Download](https://github.com/WarlockDi/InkWords-X4Pro/releases/tag/v1.6.3) · [更新说明 / Release notes](docs/releases/1.6.3.md)
+
 维护者 / Maintainer: **WarlockDi** · e99866@outlook.com  
 官方来源 / Official source: https://github.com/WarlockDi/InkWords-X4Pro
 
 ## 已经安装墨词
 
-1. 下载 `InkWords_1.5.4.xtapp`，退出墨词。
+1. 下载 `InkWords_1.6.3.xtapp`，退出墨词。
 2. 连接阅读器并进入 USB 文件传输模式。
-3. **只复制 `InkWords_1.5.4.xtapp` 到阅读器。**
+3. **只复制 `InkWords_1.6.3.xtapp` 到阅读器。**
 4. 安全弹出，退出 USB 模式，在阅读器文件列表打开 `.xtapp` 覆盖安装。
-5. 在“设置 → 关于墨词”确认版本 **1.5.4 公开版**、作者 **WarlockDi**。
+5. 在“设置 → 关于墨词”确认版本 **1.6.3**、作者 **WarlockDi**。
 
-无需先安装中间版本。不要卸载或重置进度。应用 ID 保持 `inkwords`，现有108本词库不变。私有学习记录不随本公开安装包分发。较旧版本可能无法识别新进度字段，不建议降级。
+无需先安装中间版本。不要卸载或重置进度。应用 ID 保持 `inkwords`，现有词库保持不变。私人学习记录不随公开包分发。较旧版本可能无法识别新进度字段，不建议降级。
 
 ## 首次安装
 
@@ -23,7 +27,7 @@
 
 ## English
 
-**Existing users:** download `InkWords_1.5.4.xtapp`, copy it to the reader, safely eject, and open it to install over the existing app. Do not uninstall or reset progress. Verify version 1.5.4 and WarlockDi in Settings → About.
+**Existing users:** download `InkWords_1.6.3.xtapp`, copy it to the reader, safely eject, and open it to install over the existing app. Do not uninstall or reset progress. Verify version 1.6.3 and WarlockDi in Settings → About.
 
 **First installation:** install the same single `.xtapp`. The 20-card demonstration library is initialized automatically on first launch, only when no existing catalogue is present. No separate AppFiles copy is required. Other dictionaries must be supplied by the user with appropriate rights.
 

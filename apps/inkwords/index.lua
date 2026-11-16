@@ -226,14 +226,23 @@ local boot_task=nil
 local boot_step=nil
 local start_loading=nil
 kit.flow={guard=0}
+kit.study={filter='未掌握'}
+kit.previous={}
 do
   local refresh=kit.refresh
+  local function request_frame()
+    -- One outstanding invalidation until the host starts drawing. This is not
+    -- a panel-busy flag: the firmware exposes no verified display-done callback.
+    if kit.flow.frame_requested then return end
+    kit.flow.frame_requested=true
+    refresh()
+  end
   kit.refresh=function()
-    if kit.flow.input_active then kit.flow.refresh_pending=true else refresh() end
+    if kit.flow.input_active then kit.flow.refresh_pending=true else request_frame() end
   end
   kit.flow.flush_refresh=function()
     kit.flow.input_active=false
-    if kit.flow.refresh_pending then kit.flow.refresh_pending=false;refresh() end
+    if kit.flow.refresh_pending then kit.flow.refresh_pending=false;request_frame() end
   end
 end
 local boot_stage='正在准备'
@@ -481,26 +490,32 @@ do
     rows.next=i+1
     if one then return false end
     end
-    checked(marker,'')
+    checked(rows.marker or marker,'')
     return true
   end
-  function T.flush()
-    local rows=T.pending;if not rows then return end
-    local ok,err=pcall(apply,rows)
-    if not ok then storage_error='保存失败';error(err) end
-    T.pending=nil
+  local function advance_pending()
+    T.pending_bytes=math.max(0,(T.pending_bytes or 0)-(T.pending.bytes or 0))
+    T.pending=T.waiting and table.remove(T.waiting,1) or nil
+    if not T.pending then T.waiting=nil;T.slot=0;T.pending_bytes=0;T.pair_batch=nil end
   end
-  function T.recover(verified)
-    local raw=ctx.storage:read(marker)
+  function T.flush()
+    while T.pending do
+      local ok,err=pcall(apply,T.pending)
+      if not ok then storage_error='保存失败';error(err) end
+      advance_pending()
+    end
+  end
+  local function recover_one(verified,journal)
+    local raw=ctx.storage:read(journal)
     if not raw or raw=='' then return end
     if raw:sub(1,7)=='IW_TX2 ' then
       local rows=parse2(raw)
-      if not rows then checked(marker,'');return end
-      apply(rows);return
+      if not rows then checked(journal,'');return end
+      rows.marker=journal;apply(rows);return
     end
     local rows=verified or parse(raw)
     -- An incomplete manifest cannot have started target writes; a torn clear follows complete writes.
-    if not rows then checked(marker,'');return end
+    if not rows then checked(journal,'');return end
     if not verified then for _,r in ipairs(rows) do
       local value=ctx.storage:read('answer_stage_'..r.index..'.txt')
       if type(value)~='string' or #value~=math.max(0,r.size) or checksum(value)~=r.hash then
@@ -516,11 +531,23 @@ do
         if result==false or (result==nil and why~=nil) or ctx.storage:read(r.name)~=nil then error('记录删除未完成，请重试。') end
       else checked(r.name,value) end
     end
-    checked(marker,'')
+    checked(journal,'')
+  end
+  function T.recover(verified)
+    recover_one(verified,marker)
+    -- Fixed FIFO journals: earlier targets must be replayed before later ones.
+    for i=2,4 do recover_one(nil,'answer_pending_'..i..'.txt') end
   end
   function T.begin(keep_preparation)
     if T.active then error('重复保存任务') end
-    T.flush()
+    local pair=keep_preparation and exercise and exercise.left~=nil
+    local measured,live=pcall(function()return ctx.gc:count()end)
+    if pair and T.pending and measured and live>750000 then
+      pcall(function()ctx.gc:collect()end)
+      measured,live=pcall(function()return ctx.gc:count()end)
+    end
+    if not (pair and T.pair_batch and (T.slot or 0)<4 and (T.pending_bytes or 0)<12288 and measured and live<750000) then T.flush() end
+    T.next_pair=pair
     if not keep_preparation and kit.flow.cancel_prefetch then kit.flow.cancel_prefetch(true) end
     local ok,used=pcall(function()return ctx.gc:count()end)
     if not ok or used>750000 then
@@ -549,11 +576,14 @@ do
     end
   end
   function T.read(name)
-    local rows=T.active or T.pending
-    if rows then for _,r in ipairs(rows) do if r.name==name then
-      if T.active and T.spilled then return true,r.size>=0 and ctx.storage:read('answer_stage_'..r.index..'.txt') or nil end
+    if T.active then for _,r in ipairs(T.active) do if r.name==name then
+      if T.spilled then return true,r.size>=0 and ctx.storage:read('answer_stage_'..r.index..'.txt') or nil end
       return true,r.value
     end end end
+    if T.waiting then for i=#T.waiting,1,-1 do
+      for _,r in ipairs(T.waiting[i]) do if r.name==name then return true,r.value end end
+    end end
+    if T.pending then for _,r in ipairs(T.pending) do if r.name==name then return true,r.value end end end
     return false
   end
   function T.commit()
@@ -563,10 +593,17 @@ do
       local parts={}
       for _,r in ipairs(rows) do parts[#parts+1]=r.name..' '..r.size..'\n';parts[#parts+1]=r.value or '' end
       local body=table.concat(parts)
-      checked(marker,'IW_TX2 '..checksum(body)..'\n'..body)
-      T.pending=rows;T.active=nil;T.rendered=false
+      if (T.pending_bytes or 0)+#body>16384 then T.flush() end
+      local slot=(T.slot or 0)+1
+      rows.marker=slot==1 and marker or ('answer_pending_'..slot..'.txt')
+      rows.bytes=#body
+      checked(rows.marker,'IW_TX2 '..checksum(body)..'\n'..body)
+      T.slot=slot;T.pending_bytes=(T.pending_bytes or 0)+#body;T.pair_batch=T.next_pair
+      if T.pending then T.waiting=T.waiting or {};T.waiting[#T.waiting+1]=rows else T.pending=rows end
+      T.active=nil;T.rendered=false
       return
     end
+    T.flush()
     local lines={}
     for _,r in ipairs(rows) do lines[#lines+1]=r.name..' '..r.index..' '..r.size..' '..r.hash end
     local body=table.concat(lines,'\n')..'\n'
@@ -584,7 +621,8 @@ do
       if not T.pending or not T.rendered or storage_error then return end
       local success,done=pcall(apply,T.pending,true)
       if not success then storage_error='保存失败';kit.refresh();return end
-      if done then T.pending=nil else T.after_draw(16) end
+      if done then advance_pending() end
+      if T.pending then T.after_draw(16) end
     end)end)
     if not ok or result==false or (result==nil and why~=nil) then T.scheduled=false;T.flush() end
   end
@@ -616,6 +654,7 @@ local function sread(name)
   return value
 end
 local function swrite(name, s)
+  if name:match('_wrong%.txt$') or name:match('_del%.txt$') or name:match('_own%.txt$') then kit.study.membership_revision=(kit.study.membership_revision or 0)+1 end
   kit.flow.summary_cache=nil
   if not kit.tx.active then kit.tx.flush() end
   kit.flow.resume=nil
@@ -628,7 +667,11 @@ local function swrite(name, s)
     if not ok or type(remaining)~='number' or remaining>=700000 then release_memory() end
   end
   local ok,result,why=pcall(function() if kit.tx.active then return kit.tx.stage(P.path(name),s) end;return P.write(name,s) end)
-  if not ok or result==false or (result==nil and why~=nil) then storage_error='保存失败';error('保存失败，请检查存储空间并重新打开工具。') end
+  if not ok or result==false or (result==nil and why~=nil) then kit.flow.write_failure={name=name,reason=tostring(result),why=tostring(why)};storage_error='保存失败';error('保存失败，请检查存储空间并重新打开工具。') end
+  if name:match('^iw155') and not kit.tx.active then
+    local verified,value=pcall(function()return P.read(name)end)
+    if not verified or value~=s then error('错词索引保存未完成，请重新打开。') end
+  end
   if small_keys[name] then small_cache[name]=s end
   if name=='random_modes.txt' then
     if kit.flow.cancel_prefetch then kit.flow.cancel_prefetch() end
@@ -639,6 +682,7 @@ local function swrite(name, s)
   end
 end
 local function sremove(name)
+  if name:match('_wrong%.txt$') or name:match('_del%.txt$') or name:match('_own%.txt$') then kit.study.membership_revision=(kit.study.membership_revision or 0)+1 end
   kit.flow.summary_cache=nil
   if not kit.tx.active then kit.tx.flush() end
   kit.flow.resume=nil
@@ -681,7 +725,7 @@ end
 -- a data-section file as one string (the package reader goes line by line)
 local function kv(s) return kit.kv(s) end
 local function unesc(s)
-  return (s:gsub('\\(.)', function(ch) if ch == 'n' then return '\n' elseif ch == 't' then return '\t' end return ch end))
+  return (s:gsub('\r',''):gsub('\\(.)', function(ch) if ch == 'n' then return '\n' elseif ch == 't' then return '\t' end return ch end))
 end
 local function lines(text)
   if text:sub(-1) ~= '\n' then text = text .. '\n' end
@@ -759,6 +803,7 @@ local function discover()
     text=files_read('library_v2.txt')
   end
   text=text:gsub('\r','')
+  kit.study.catalogue=kit.study.digest(text)
   local format=text:match('^([^\n]+)')
   if format~='INKWORDS_LIBRARY_2' and format~='INKWORDS_LIBRARY_3' then error('词库目录版本不正确，请重新复制更新包中的 AppFiles。') end
   local seen={}
@@ -883,12 +928,12 @@ local function progress_header(d) return '#generation='..generation(d)..'\n' end
 local function load_prog(d, s)
   local t = {}
   for line in lines(progress_text(d,s)) do
-    local k, due, a, b, reps, lapses, last, state, evidence, spelling = line:match('^(%S+) (%-?%d+) ([%d%.]+) ([%d%.]+) (%d+) (%d+) ?(%-?%d*) ?([lr]?) ?(%d*) ?(%d*)$')
+    local k, due, a, b, reps, lapses, last, state, evidence, spelling, learned_day = line:match('^(%S+) (%-?%d+) ([%d%.]+) ([%d%.]+) (%d+) (%d+) ?(%-?%d*) ?([lr]?) ?(%d*) ?(%d*) ?(%d*)$')
     if k then
       if s ~= 'own' then k = tonumber(k) end
       due, a, b = tonumber(due), tonumber(a), tonumber(b)
       if state ~= '' then
-        t[k] = { due = due, s = a, d = b, reps = tonumber(reps), lapses = tonumber(lapses), last = tonumber(last) or due, state = state, evidence=tonumber(evidence) or 0, spelling=tonumber(spelling) or 0 }
+        t[k] = { due = due, s = a, d = b, reps = tonumber(reps), lapses = tonumber(lapses), last = tonumber(last) or due, state = state, evidence=tonumber(evidence) or 0, spelling=tonumber(spelling) or 0,learned_day=tonumber(learned_day) or 0 }
       else
         -- SM-2: the interval is the stability, an ease of 1.3 .. 3.5 a difficulty of 10 .. 1
         local ivl, ease = a, b
@@ -906,7 +951,7 @@ local function fmt(x) return (string.format('%.2f', x):gsub('%.?0+$', '')) end
 local function save_prog(d, s, t)
   local out, min = {}, nil
   for k, r in pairs(t) do
-    out[#out + 1] = k .. ' ' .. r.due .. ' ' .. fmt(r.s) .. ' ' .. fmt(r.d) .. ' ' .. r.reps .. ' ' .. r.lapses .. ' ' .. r.last .. ' ' .. r.state .. ' ' .. (r.evidence or 0) .. ' ' .. (r.spelling or 0)
+    out[#out + 1] = k .. ' ' .. r.due .. ' ' .. fmt(r.s) .. ' ' .. fmt(r.d) .. ' ' .. r.reps .. ' ' .. r.lapses .. ' ' .. r.last .. ' ' .. r.state .. ' ' .. (r.evidence or 0) .. ' ' .. (r.spelling or 0) .. ' ' .. (r.learned_day or 0)
     if not min or r.due < min then min = r.due end
   end
   if #out == 0 then sremove(pname(d, s)) else swrite(pname(d, s), progress_header(d)..table.concat(out, '\n') .. '\n') end
@@ -914,14 +959,14 @@ local function save_prog(d, s, t)
 end
 
 -- Single-card updates avoid allocating hundreds of scheduler records for every answer.
-local function read_record(d,s,key)
+local function read_record(d,s,key,raw)
   local wanted=tostring(key)..' '
-  for line in lines(progress_text(d,s)) do
+  for line in lines(raw or progress_text(d,s)) do
     if line:sub(1,#wanted)==wanted then
-      local _,due,a,b,reps,lapses,last_time,state,evidence,spelling=line:match('^(%S+) (%-?%d+) ([%d%.]+) ([%d%.]+) (%d+) (%d+) ?(%-?%d*) ?([lr]?) ?(%d*) ?(%d*)$')
+      local _,due,a,b,reps,lapses,last_time,state,evidence,spelling,learned_day=line:match('^(%S+) (%-?%d+) ([%d%.]+) ([%d%.]+) (%d+) (%d+) ?(%-?%d*) ?([lr]?) ?(%d*) ?(%d*) ?(%d*)$')
       if not due then return nil end
       due,a,b=tonumber(due),tonumber(a),tonumber(b)
-      if state~='' then return {due=due,s=a,d=b,reps=tonumber(reps),lapses=tonumber(lapses),last=tonumber(last_time) or due,state=state,evidence=tonumber(evidence) or 0,spelling=tonumber(spelling) or 0} end
+      if state~='' then return {due=due,s=a,d=b,reps=tonumber(reps),lapses=tonumber(lapses),last=tonumber(last_time) or due,state=state,evidence=tonumber(evidence) or 0,spelling=tonumber(spelling) or 0,learned_day=tonumber(learned_day) or 0} end
       return {due=due,s=math.max(a,1),d=math.max(1,math.min(10,10-(b-1.3)*4)),reps=tonumber(reps),lapses=tonumber(lapses),last=due-math.floor(a*86400),state=a>=1 and 'r' or 'l'}
     end
   end
@@ -934,18 +979,18 @@ local function progress_keys(d,s)
   end
   return keys
 end
-local function save_record(d,s,key,rec)
-  local out,present={},{};local min=nil
-  for line in lines(progress_text(d,s)) do
+local function save_record(d,s,key,rec,raw)
+  local out,present={},{};local min=nil;local wanted=tostring(key)
+  for line in lines(raw or progress_text(d,s)) do
     local k,due=line:match('^(%S+) (%-?%d+) ')
-    if k and k~=tostring(key) then
+    if k and k~=wanted then
       out[#out+1]=line;local index=s=='own' and k or tonumber(k)
       if index then present[index]=true end
       due=tonumber(due);min=min and math.min(min,due) or due
     end
   end
   if rec then
-    out[#out+1]=key..' '..rec.due..' '..fmt(rec.s)..' '..fmt(rec.d)..' '..rec.reps..' '..rec.lapses..' '..rec.last..' '..rec.state..' '..(rec.evidence or 0)..' '..(rec.spelling or 0)
+    out[#out+1]=key..' '..rec.due..' '..fmt(rec.s)..' '..fmt(rec.d)..' '..rec.reps..' '..rec.lapses..' '..rec.last..' '..rec.state..' '..(rec.evidence or 0)..' '..(rec.spelling or 0)..' '..(rec.learned_day or 0)
     present[key]=true;min=min and math.min(min,rec.due) or rec.due
   end
   swrite(pname(d,s),progress_header(d)..table.concat(out,'\n')..'\n')
@@ -1094,7 +1139,7 @@ schedule=function(rec,g,now,kind)
     end
   end
   if g==2 then ev=math.max(0,ev-1);spelling=math.max(0,spelling-1) end
-  out.evidence=ev;out.spelling=spelling
+  out.evidence=ev;out.spelling=spelling;out.learned_day=today()
   return out
 end
 function kit.memory.level(rec)
@@ -1104,6 +1149,7 @@ function kit.memory.level(rec)
 end
 
 function kit.memory.expose(e)
+  if kit.previous.viewing then return end
   if not e then return end
   local rec=e.s=='own' and own_prog[e.l] or read_record(deck,e.s,e.l)
   if not rec then return end
@@ -1113,7 +1159,17 @@ function kit.memory.expose(e)
   save_record(deck,e.s,e.l,updated);save_state(deck)
 end
 
-do local expose=kit.memory.expose;kit.memory.expose=function(e)return kit.tx.run(expose,e)end end
+do
+  local expose=kit.memory.expose
+  kit.memory.expose=function(e)
+    if kit.previous.viewing or not e then return end
+    local rec=e.s=='own' and own_prog[e.l] or read_record(deck,e.s,e.l)
+    -- Most detail opens follow an answer. Avoid a no-op transaction and flush;
+    -- genuinely old exposures still recheck and write through the safe path.
+    if not rec or now_sec()-(rec.last or now_sec())<600 then return end
+    return kit.tx.run(expose,e)
+  end
+end
 local function span(sec)
   if sec < 3600 then return math.max(1, sec // 60) .. 'm' end
   local d = sec / 86400
@@ -1255,15 +1311,9 @@ kit.flow.refill=function()
     if #queue==0 then screen='done' end
   end,true)
 end
-local function counts()
-  local n, r = 0, 0
-  for _k, e in ipairs(queue) do if e.new then n = n + 1 else r = r + 1 end end
-  return n, r
-end
-
 ------------------------------------------------------------------ opening a deck
 
-local function open_deck_sync(d)
+local function open_deck_sync(d,review_queue)
   local resume=kit.flow.resume
   local reuse=resume and resume.key==d.key and resume.path==P.path(d.key..'_st.txt') and resume.day==today() and now_sec()<resume.expires and (random_mix or resume.mode==mode) and resume.mix==random_mix
   kit.flow.guard=0
@@ -1275,14 +1325,18 @@ local function open_deck_sync(d)
   if sread('recent_decks.txt')~=recent_text then swrite('recent_decks.txt',recent_text) end
   kit.close()
   if settings.recent~=d.key then settings.recent=d.key;save_settings() end
+  kit.previous={}
   deck = d
   st = load_state(d)
   load_own(d); load_dels(d)
-  if reuse and #resume.queue>0 then queue=resume.queue;kit.flow.resume=nil else build_queue() end
+  if kit.study.header then kit.study.header(d) end
+  if review_queue then queue=review_queue
+  elseif reuse and #resume.queue>0 then queue=resume.queue;kit.flow.resume=nil else build_queue() end
   screen, shown, scroll, last, session.done, msg = 'study', false, 0, nil, 0, nil
   if #queue == 0 then screen = 'done' end
 end
 local function open_deck(d)
+  kit.study.plan=nil
   screen='decks'
   start_loading('准备练习',function() open_deck_sync(d) end)
 end
@@ -1399,8 +1453,10 @@ local function toggle_lock(d)
 end
 
 local function show_decks(skip_summary)
+  local was_wrong_review=kit.study.plan
+  kit.study.context=nil;kit.study.header_job=nil;kit.study.plan=nil;kit.study.visible=nil;kit.previous={}
   kit.tx.flush()
-  if screen=='study' and deck and not storage_error and not boot_task then
+  if not was_wrong_review and screen=='study' and deck and not storage_error and not boot_task then
     local pending={};local saved=exercise and exercise.saved or {}
     for _,e in ipairs(queue) do
       if not saved[tostring(e.s)..':'..tostring(e.l)] then pending[#pending+1]=e end
@@ -1432,8 +1488,9 @@ local function wrong_rows(d)
   return out
 end
 local function write_wrong(d,rows)
+  kit.study.revision=(kit.study.revision or 0)+1
   local out={};for _,e in ipairs(rows) do out[#out+1]=entry_id(e)..' '..e.errors end
-  swrite(d.key..'_wrong.txt',table.concat(out,'\n'))
+  swrite(d.key..'_wrong.txt',table.concat(out,'\n'));d.wrong_empty=#rows==0
 end
 local function daily_stats()
   local t=kv(sread('daily.txt'))
@@ -1465,6 +1522,11 @@ local function history_fields(e,r,before,kind)
     ..'\nfirst_attempts='..attempts..'\nfirst_correct='..correct..'\nerrors='..errors
 end
 local function record_result(e,r,before,kind)
+  kit.study.revision=(kit.study.revision or 0)+1
+  if deck.header_day~=today() then deck.header_day=today();deck.today_learned=0 end
+  if not before or before.learned_day~=today() then deck.today_learned=(deck.today_learned or 0)+1 end
+  if before and before.due<=now_sec() then deck.header_due=math.max(0,(deck.header_due or 0)-1) end
+  deck.header_revision=kit.study.revision
   local extra=history_fields(e,r,before,kind)
   local t=daily_stats();local k=before and 'review' or 'fresh';t[k]=t[k]+1
   if r==1 then
@@ -1476,18 +1538,17 @@ local function record_result(e,r,before,kind)
       return line
     end)
     if not found then updated=updated..(updated~='' and '\n' or '')..id..' 1' end
-    swrite(deck.key..'_wrong.txt',updated)
+    swrite(deck.key..'_wrong.txt',updated);deck.wrong_empty=false
   end
   swrite('daily.txt','day='..t.day..'\nfresh='..t.fresh..'\nreview='..t.review..'\nwrong='..t.wrong..extra)
 end
 function kit.tx.entry(e,grade,kind)
   if st.day~=today() then st.day=today();st.new=0 end
   if type(collectgarbage)=='function' then pcall(collectgarbage,'collect') end
-  local before=e.s=='own' and own_prog[e.l] or read_record(deck,e.s,e.l)
-  last={e=e,before=before,next=st.next,new=st.new,queue={table.unpack(queue)},interactive=true,
-    daily=sread('daily.txt') or '',wrong=sread(deck.key..'_wrong.txt') or ''}
+  local raw=progress_text(deck,e.s)
+  local before=e.s=='own' and own_prog[e.l] or read_record(deck,e.s,e.l,raw)
   local rec=schedule(before or {},grade,now_sec(),kind)
-  local present=save_record(deck,e.s,e.l,rec)
+  local present=save_record(deck,e.s,e.l,rec,raw)
   if not before then st.new=st.new+1 end
   if deck.source~='own' then
     local total=slots(deck)
@@ -1509,9 +1570,9 @@ function kit.tx.rate(r)
   local e = queue[1]
   if not e then return end
   local now = now_sec()
+  kit.previous.last={flash=card_of(e),mode='flash'}
   local before = rec_of(e)
   local rec = schedule(before or {}, r, now,'self')
-  last = { e = e, before = before, next = st.next, new = st.new, queue = { table.unpack(queue) }, daily=sread('daily.txt') or '',wrong=sread(deck.key..'_wrong.txt') or '' }
   record_result(e,r,before,'self')
   if e.s == 'own' then
     own_prog[e.l] = rec
@@ -1533,24 +1594,6 @@ function kit.tx.rate(r)
 end
 
 local function rate(r) return kit.tx.run(kit.tx.rate,r) end
-function kit.tx.undo()
-  if not last then msg = '暂无可撤销记录。'; return end
-  local e = last.e
-  if e.s == 'own' then
-    own_prog[e.l] = last.before
-    save_prog(deck, 'own', own_prog)
-  else
-    save_record(deck,e.s,e.l,last.before)
-  end
-  if last.daily then swrite('daily.txt',last.daily);swrite(deck.key..'_wrong.txt',last.wrong) end
-  st.next, st.new, queue = last.next, last.new, last.queue
-  save_state(deck)
-  session.done = math.max(0, session.done - 1)
-  if last.interactive then build_queue() end
-  last, shown, scroll, screen, msg = nil, false, 0, 'study', nil
-end
-
-local function undo() return kit.tx.run(kit.tx.undo) end
 function kit.tx.delete()
   local e = queue[1]
   if not e then return end
@@ -1715,7 +1758,7 @@ counts=function()
   end
   return math.max(0,n),math.max(0,r)
 end
-local mode_names = {random='随机组合', quiz='英选中', reverse='中选英', cloze='例句填空', letters='拼写单词', match='配对', flash='单词卡'}
+local mode_names = {random='随机组合', quiz='英选中', reverse='中选英', cloze='例句填空', letters='拼写单词', match='中英配对', flash='单词卡'}
 local function word(c) return (c.f:match('^[^\n]+') or c.f):gsub('^%s+',''):gsub('%s+$','') end
 local function meaning(c)
   local m = c.b:match('释义：([^\n]+)')
@@ -1926,7 +1969,22 @@ end
 -- Keep all text inside the existing touch regions; no additional asset cache.
 local function text_in_box(gg,text,x,y,w,h,font,center,limit,strong,prepared)
   font=font or 'medium'
-  local ls=prepared or wrapped_text(text,w,font)
+  local ls=prepared
+  if not ls and exercise and #text<=512 then
+    local cached=exercise.box_rows
+    if cached then for _,v in ipairs(cached) do
+      if v.text==text and v.width==w and v.font==font then ls=v.rows;break end
+    end end
+    if not ls then
+      ls=wrapped_text(text,w,font)
+      if #ls<=12 then
+        cached=cached or {};exercise.box_rows=cached
+        if #cached>=8 then table.remove(cached,1) end
+        cached[#cached+1]={text=text,width=w,font=font,rows=ls}
+      end
+    end
+  end
+  ls=ls or wrapped_text(text,w,font)
   local step=math.max(28,kit.line_h(font)+5)
   local count=math.min(#ls,limit or math.floor(h/step))
   local yy=y+math.max(0,(h-(count-1)*step-kit.line_h(font))//2)
@@ -2119,11 +2177,19 @@ function kit.flow.warm_layout(q)
     cache.key=nil;cache.rows=nil;file_cache.name=nil;file_cache.text=nil;file_cache.first=nil
     if ctx.gc and ctx.gc.collect then pcall(function()ctx.gc:collect()end) end
   end
-  if mode=='letters' then kit.letters.layout(q)
+  if mode=='letters' then
+    kit.letters.layout(q)
+    text_in_box(kit.flow.warm_gg,meaning(q.card),24,312,W-48,104,'medium',true,3)
   elseif mode=='match' then
     for i,c in ipairs(q.left) do pair_text(kit.flow.warm_gg,word(c),24,164+(i-1)*112,194,84);boot_checkpoint() end
     for i,r in ipairs(q.right) do pair_text(kit.flow.warm_gg,meaning(r.card),258,164+(i-1)*112,198,84);boot_checkpoint() end
-  else draw_prompt(kit.flow.warm_gg,q) end
+  else
+    draw_prompt(kit.flow.warm_gg,q)
+    for i,o in ipairs(q.options or {}) do
+      text_in_box(kit.flow.warm_gg,string.char(64+i)..'. '..o.label,26,278+(i-1)*88+8,428,64,'medium',false,2)
+      boot_checkpoint()
+    end
+  end
 end
 do
   local original_show=kit.show
@@ -2132,7 +2198,7 @@ do
     for _,row in ipairs(m.rows or {}) do
       if not (#row==2 and row[1][1]=='上一页' and row[2][1]=='下一页 1/1') then rows[#rows+1]=row end
     end
-    if not storage_error then kit.tx.flush() end
+    if not storage_error and not m.keep_pending then kit.tx.flush() end
     kit.flow.cancel_prefetch(true)
     m.rows=rows;m.ink_layout=nil;original_show(m)
   end
@@ -2145,9 +2211,11 @@ do
       for _,line in ipairs(wrapped_text(text,400,'small')) do lines[#lines+1]={text=line,font='small',height=25} end
     end
     local th=0;for _,line in ipairs(lines) do th=th+line.height end
-    local h=40+th+#m.rows*64;local y=math.max(100,(800-h)//2)
+    if m.progress then th=th+84 end
+    local h=40+th+#m.rows*64+(m.settings and 12 or 0);local y=math.max(100,90+(710-h)//2)
     local buttons={};local by=y+22+th
-    for _,row in ipairs(m.rows) do
+    for row_index,row in ipairs(m.rows) do
+      if m.settings and row_index==4 then by=by+12 end
       local bw=(400-(#row-1)*12)//#row
       for k,b in ipairs(row) do buttons[#buttons+1]={x=40+(k-1)*(bw+12),y=by,w=bw,h=54,b=b} end
       by=by+64
@@ -2160,15 +2228,44 @@ do
     gg:rect(20,y,440,h,{fill=true,color=0});gg:rect(20,y,440,h,{line_width=1})
     local yy=y+20
     for _,line in ipairs(lines) do gg:text(40,yy,line.text,{font=kit.font(line.font)});yy=yy+line.height end
-    for _,b in ipairs(buttons) do kit.button(gg,b.x,b.y,b.w,b.h,b.b[3]==false and '('..b.b[1]..')' or b.b[1],{line_width=1}) end
+    if m.progress then
+      local p=m.progress;local total=p.total or 0;local done=p.done or 0
+      gg:text(40,yy+8,p.stage or '正在准备',{font=kit.font('small')})
+      if total>0 then
+        local percent=math.min(100,math.max(0,math.floor(done*100/total)))
+        local label=percent..'%';local f=kit.font('small')
+        gg:text(440-kit.width(f,label),yy+8,label,{font=f})
+        gg:rect(40,yy+42,400,14,{line_width=1})
+        local fill=math.floor(396*percent/100)
+        if fill>0 then gg:rect(42,yy+44,fill,10,{fill=true}) end
+      end
+    end
+    for _,b in ipairs(buttons) do
+      if b.b[3]==false then
+        gg:rect(b.x,b.y,b.w,b.h,{line_width=1})
+        local f=kit.font('small');gg:text(b.x+(b.w-kit.width(f,b.b[1]))//2,b.y+(b.h-kit.line_h('small'))//2,b.b[1],{font=f})
+      elseif m.checks and b.b.checked~=nil then
+        local f=kit.font('medium');gg:text(b.x+12,b.y+(b.h-kit.line_h('medium'))//2,b.b[1],{font=f})
+        if b.b.checked then
+          local x,y=b.x+b.w-36,b.y+16
+          gg:line(x+2,y+10,x+9,y+17,{line_width=2});gg:line(x+9,y+17,x+22,y+2,{line_width=2})
+        end
+        gg:line(b.x,b.y+b.h,b.x+b.w,b.y+b.h)
+      elseif b.b.value then
+        gg:rect(b.x,b.y,b.w,b.h,{line_width=1})
+        local f=kit.font('medium');local yy=b.y+(b.h-kit.line_h('medium'))//2
+        gg:text(b.x+16,yy,b.b[1],{font=f});gg:text(b.x+b.w-16-kit.width(f,b.b.value),yy,b.b.value,{font=f})
+      else kit.button(gg,b.x,b.y,b.w,b.h,b.b[1],{line_width=1})
+      end
+    end
   end
   kit.tap_modal=function(x,y)
     local m=kit.modal();if not m then return false end
     local _,buttons,top,h=dialog_layout(m)
     for _,b in ipairs(buttons) do
-      if x>=b.x and x<b.x+b.w and y>=b.y and y<b.y+b.h then if b.b[3]~=false then b.b[2]()end;return true end
+      if x>=b.x and x<b.x+b.w and y>=b.y and y<b.y+b.h then if b.b[3]~=false then b.b[2]()else kit.flow.no_refresh=true end;return true end
     end
-    if (y<top or y>top+h) and m.cancel then m.cancel()end
+    if (y<top or y>top+h) and m.cancel then m.cancel()else kit.flow.no_refresh=true end
     return true
   end
 end
@@ -2382,7 +2479,7 @@ function kit.letters.draw(gg,q)
         break
       end
     end
-  else kit.button(gg,12,614,W-24,56,'撤销') end
+  else kit.button(gg,12,614,W-24,56,'删除字母') end
 end
 function kit.letters.tap(q,x,y)
   local s=q.spelling;local l=kit.letters.layout(q)
@@ -2392,12 +2489,13 @@ function kit.letters.tap(q,x,y)
   if x>=12 and x<W-12 and y>=614 and y<670 then
     local j=s.active
     if not s.filled[j] then j=j-1 end
-    if j>=1 then s.filled[j]=nil;s.active=j end
+    if j>=1 then s.filled[j]=nil;s.active=j else kit.flow.no_refresh=true end
     return
   end
   for j,pos in ipairs(s.slots) do
     local r=l.cells[pos]
-    if x>=r.x and x<r.x+r.w and y>=r.y and y<r.y+l.step then s.active=j;return end
+    if x>=r.x and x<r.x+r.w and y>=r.y and y<r.y+l.step then
+      if s.active==j then kit.flow.no_refresh=true else s.active=j end;return end
   end
   for i,r in ipairs(l.buttons) do
     if x>=r.x and x<r.x+r.w and y>=r.y and y<r.y+r.h then
@@ -2409,6 +2507,7 @@ function kit.letters.tap(q,x,y)
       save_answer(q,q.card,not q.correct);q.failed=not q.correct;q.answered=true;return
     end
   end
+  kit.flow.no_refresh=true
 end
 
 function kit.letters.draw_menu(gg)
@@ -2510,19 +2609,28 @@ function kit.flow.prepare_next(q)
   kit.flow.prefetch_schedule(80)
 end
 local function finish_exercise(force)
+  if kit.previous.viewing then kit.previous.restore();return end
   if storage_error then error(storage_error) end
   if force then kit.tx.flush() end
   if not exercise or (not exercise.answered and not force) then return end
+  kit.previous.last={question=exercise,mode=mode}
   local staged=exercise.next_ready
   kit.flow.cancel_prefetch(true)
   kit.tx.rendered=false
-  for key,e in pairs(exercise.saved) do
-    for i=#queue,1,-1 do if entry_id(queue[i])==key then table.remove(queue,i) end end
-    local rec=e.rec
-    if rec and rec.due<=now_sec() then queue[#queue+1]={s=e.s,l=e.l} end
+  local kept=0
+  for i=1,#queue do
+    local e=queue[i]
+    if not exercise.saved[entry_id(e)] then kept=kept+1;queue[kept]=e end
   end
+  for i=#queue,kept+1,-1 do queue[i]=nil end
+  for _,e in pairs(exercise.saved) do
+    local rec=e.rec
+    if not kit.study.plan and rec and rec.due<=now_sec() then queue[#queue+1]={s=e.s,l=e.l} end
+  end
+  if kit.study.plan then for _ in pairs(exercise.saved) do kit.study.reviewed=(kit.study.reviewed or 0)+1 end end
+  exercise.next_ready=nil
   exercise=nil;shown=false;scroll=0
-  if #queue==0 then kit.flow.refill()
+  if #queue==0 then if kit.study.plan then kit.study.advance() else kit.flow.refill() end
   elseif staged and staged.id==entry_id(queue[1]) then
     exercise=staged.question;mode=staged.mode;previous_mode=staged.previous
     kit.prompt_restore(exercise.prepared_prompt);exercise.prepared_prompt=nil
@@ -2534,7 +2642,9 @@ local function draw_exercise(gg)
     if boot_task then gg:text(20,160,'正在准备…',{font=kit.font('medium')}) end
     return
   end
-  kit.flow.prepare_next(q)
+  q.presented=true
+  if q.answered then q.feedback_drawn=true end
+  if not kit.previous.viewing then kit.flow.prepare_next(q) end
   local label=mode=='cloze' and '例句填空' or mode=='match' and '中英配对' or mode_names[mode]
   gg:text(20,108,label,{font=kit.font('small')})
   if mode=='letters' then kit.letters.draw(gg,q)
@@ -2582,9 +2692,9 @@ show_sentence=function(q,page)
   content=content..'\n答案：'..word(q.card)..'\n'..meaning(q.card)
   local all=wrapped_text(content,400,'small');local pages=math.max(1,math.ceil(#all/9));page=math.min(page,pages)
   local visible={};for i=(page-1)*9+1,math.min(page*9,#all) do visible[#visible+1]=all[i] end
-  kit.show({title='句子讲解',lines=visible,rows={
+  kit.show({title='句子讲解',keep_pending=true,lines=visible,rows={
     {{'上一页',function() show_sentence(q,(page-2)%pages+1) end},{'下一页 '..page..'/'..pages,function() show_sentence(q,page%pages+1) end}},
-    {{'查看各选项',function() show_details(q,q.selected or 1,1) end},{'返回题目',kit.close}}},cancel=kit.close})
+    {{'选项释义',function() show_details(q,q.selected or 1,1) end},{'返回题目',kit.close}}},cancel=kit.close})
 end
 show_details=function(q,index,page)
   local cards={}
@@ -2607,20 +2717,26 @@ show_details=function(q,index,page)
     {'上一词',function() show_details(q,(index-2)%#cards+1,1) end},
     {'下一词',function() show_details(q,index%#cards+1,1) end}} end
   if mode=='cloze' then rows[#rows+1]={{'句子讲解',function() show_sentence(q,1) end}} end
-  rows[#rows+1]={
-    {'页 '..page..'/'..pages,function() show_details(q,index,page%pages+1) end},
-    {mode=='match' and '返回配对' or '返回',kit.close}}
+  local footer={}
+  if pages>1 then footer[#footer+1]={'页 '..page..'/'..pages,function() show_details(q,index,page%pages+1) end} end
+  footer[#footer+1]={mode=='match' and '返回配对' or '返回',kit.close}
+  rows[#rows+1]=footer
   local title=word(c);local suffix=#cards>1 and ('  '..index..'/'..#cards) or ''
   while #title>0 and kit.width(kit.font('medium'),title..suffix)>390 do title=kit.drop_last(title) end
-  kit.show({title=title..suffix,
+  kit.show({title=title..suffix,keep_pending=true,
     lines=visible,rows=rows,cancel=kit.close})
 end
 local function tap_exercise(x,y)
-  if y>=704 and (not exercise or not exercise.answered) and (kit.now_ms() or kit.flow.guard)<kit.flow.guard then return end
+  if not exercise or not exercise.presented then kit.flow.no_refresh=true;return end
+  if kit.previous.viewing and y<704 then kit.flow.no_refresh=true;return end
+  if y>=704 and (not exercise or not exercise.answered) and (kit.now_ms() or kit.flow.guard)<kit.flow.guard then kit.flow.no_refresh=true;return end
   if not kit.modal() then detail_layout=nil end
   prepare_exercise(); local q=exercise; if not q then return end
   if mode~='match' and mode~='letters' and #q.options<2 then if y>=704 then mode='flash'; exercise=nil end; return end
   if q.answered then
+    -- Ignore events belonging to the old question until feedback has been drawn.
+    -- No timer or guessed panel-refresh duration: re-arm on the host draw call.
+    if not q.feedback_drawn then kit.flow.no_refresh=true;return end
     if y>=704 then
       if x>=240 then finish_exercise();kit.flow.guard=(kit.now_ms() or 0)+450
       elseif mode=='cloze' then show_sentence(q,1)
@@ -2629,18 +2745,18 @@ local function tap_exercise(x,y)
       local i=(y-156)//112+1
       if i<=#q.left and (y-156)%112<100 then
         if x<230 then show_details(q,i,1)
-        elseif x>=246 then show_details(q,q.right[i].index,1) end
-      end
+        elseif x>=246 then show_details(q,q.right[i].index,1) else kit.flow.no_refresh=true end
+      else kit.flow.no_refresh=true end
     elseif mode~='match' and mode~='letters' and y>=278 and y<630 then
       local i=(y-278)//88+1
-      if (y-278)%88<80 and q.options[i] then show_details(q,i,1) end
-    end
+      if (y-278)%88<80 and q.options[i] then show_details(q,i,1) else kit.flow.no_refresh=true end
+    else kit.flow.no_refresh=true end
     return
   end
   if mode=='letters' then kit.letters.tap(q,x,y)
   elseif mode=='match' then
     local i=(y-156)//112+1
-    if y<156 or i>#q.left or (y-156)%112>=100 then return end
+    if y<156 or i>#q.left or (y-156)%112>=100 or (x>=230 and x<246) then kit.flow.no_refresh=true;return end
     if x<230 and q.matched[i] then show_details(q,i,1)
     elseif x>=246 and q.matched[q.right[i].index] then show_details(q,q.right[i].index,1)
     else
@@ -2673,10 +2789,13 @@ local function tap_exercise(x,y)
 end
 choose_mode=function(d,switching)
   local rows={}
-  for _,m in ipairs({'random','quiz','reverse','cloze','letters','match','flash'}) do
+  for i,m in ipairs({'random','quiz','reverse','cloze','letters','match','flash'}) do
     local chosen=m
-    rows[#rows+1]={{mode_names[chosen],function()
+    local row=i==1 and 1 or (i//2+1)
+    rows[row]=rows[row] or {}
+    rows[row][#rows[row]+1]={mode_names[chosen],function()
       kit.close()
+      kit.study.plan=nil;kit.previous={}
       if switching and exercise then finish_exercise(true) end
       random_mix=chosen=='random'; previous_mode=nil
       settings.recent_mode=chosen
@@ -2685,9 +2804,10 @@ choose_mode=function(d,switching)
       if switching then
         start_loading('准备练习',function()build_queue();exercise=nil;shown=false;scroll=0;screen=#queue>0 and 'study' or 'done';save_settings()end)
       else open_deck(d) end
-    end}}
+    end}
   end
-  kit.show({title='练习模式',lines=wrapped_text(d.name,400,'small'),rows=rows,cancel=kit.close})
+  rows[#rows+1]={{'返回',kit.close}}
+  kit.show({title='练习题型',keep_pending=true,lines={},rows=rows,cancel=kit.close})
 end
 
 
@@ -2828,7 +2948,7 @@ local function category(d)
   if d.key=='en' or d.key=='wa7298' or n:find('cefr',1,true) then return '通用与分级' end
   return '我的与导入'
 end
-local function library_view()
+local function build_library_view()
   if library_query~='' or favorites_only then return flat_library_view() end
   local result={}
   local function folder(id,name,description)
@@ -2855,10 +2975,15 @@ local function library_view()
   else
     for _,d in ipairs(decks) do if d.key==settings.recent then result[#result+1]=d;break end end
     folder('最近练习','最近练习','最近学习的 5 个单词本')
+    folder('高频错词','高频错词','跨词库错词复习')
     local counts={};for _,d in ipairs(decks) do local c=category(d);counts[c]=(counts[c] or 0)+1 end
     for _,name in ipairs(category_names) do if counts[name] then folder(name,name,counts[name]..' 个单词本') end end
   end
   return result
+end
+
+local function library_view()
+  return kit.flow.draw_view or build_library_view()
 end
 
 request_visible_summaries=function()
@@ -2885,15 +3010,15 @@ random_settings=function()
   local rows={}
   for _,m in ipairs({'quiz','reverse','cloze','match','letters'}) do
     local chosen=m
-    rows[#rows+1]={{(on[m] and '✓ ' or '□ ')..mode_names[m],function()
-      if on[chosen] and #modes==1 then return end
+    rows[#rows+1]={{mode_names[m],function()
+      if on[chosen] and #modes==1 then kit.flow.no_refresh=true;return end
       on[chosen]=not on[chosen];local out={}
       for _,v in ipairs({'quiz','reverse','cloze','match','letters'}) do if on[v] then out[#out+1]=v end end
       swrite('random_modes.txt',table.concat(out,','));random_settings()
-    end}}
+    end,checked=on[m] and true or false}}
   end
-  rows[#rows+1]={{'完成',kit.close}}
-  kit.show({title='自定义随机组合',lines=wrapped_text('至少选择一种题型。',400,'small'),rows=rows,cancel=kit.close})
+  rows[#rows+1]={{'返回设置',function()show_settings()end}}
+  kit.show({title='组合题型',keep_pending=true,checks=true,rows=rows,cancel=function()show_settings()end})
 end
 local wrong_book
 wrong_book=function(p)
@@ -2905,7 +3030,7 @@ wrong_book=function(p)
   local pages=math.max(1,math.ceil(#entries/5));p=math.min(p,pages)
   local rows={}
   for i=(p-1)*5+1,math.min(p*5,#entries) do
-    local e=entries[i];local c=card_of(e) or {f='词条不可用',b='原词条已不存在，可移出错词本。'}
+    local e=entries[i];local c=card_of(e) or {f='词条不可用',b='原词条已不存在，可移出错题本。'}
     rows[#rows+1]={{fit_label(word(c),300,'medium')..' · 错'..e.errors,function()
       local ls=wrapped_text(c.b,400,'small');local detail_page=1
       local detail
@@ -2915,12 +3040,12 @@ wrong_book=function(p)
         kit.show({title=fit_label(word(c),390,'medium'),lines=visible,rows={
           {{'练习这个词',function()
             kit.close();exercise=nil;queue={{s=e.s,l=e.l}};screen='study';shown=false;scroll=0
-          end},{'移出错词本',function()
+          end},{'移出错题本',function()
             local remaining={};for _,w in ipairs(wrong_rows(deck)) do if entry_id(w)~=entry_id(e) then remaining[#remaining+1]=w end end
             write_wrong(deck,remaining);wrong_book(p)
           end}},
           {{'页 '..detail_page..'/'..math.max(1,math.ceil(#ls/8)),function() detail_page=detail_page%math.max(1,math.ceil(#ls/8))+1;detail() end},
-           {'返回错词本',function() wrong_book(p) end}}},cancel=function() wrong_book(p) end})
+           {'返回错题本',function() wrong_book(p) end}}},cancel=function() wrong_book(p) end})
       end
       detail()
     end}}
@@ -2932,7 +3057,7 @@ wrong_book=function(p)
     screen='study';shown=false;scroll=0
   end},{'页 '..p..'/'..pages,function() wrong_book(p%pages+1) end}}
   rows[#rows+1]={{'关闭',kit.close}}
-  kit.show({title='错词本 · '..#entries..' 词',lines=#entries==0 and {'暂无错词。'} or {},rows=rows,cancel=kit.close})
+  kit.show({title='错题本 · '..#entries..' 词',lines=#entries==0 and {'暂无错词。'} or {},rows=rows,cancel=kit.close})
 end
 local function confirm_reset_progress()
   management_confirm('deck',deck)
@@ -2947,7 +3072,8 @@ do
       '天数与复习次数自1.0.2开始累计。',
       '首次答对率仅统计今日首次作答，',
       '不含单词卡自评。错题保留最近60词。',
-      '已学不等于掌握；重置会影响统计。'},rows={{{'返回',function()show_today()end}}},cancel=kit.close})
+      '已学不等于掌握；重置会影响统计。',
+      '升级前当天的逐词数量无法补算。'},rows={{{'返回',function()show_today()end}}},cancel=kit.close})
   end
   local function review_group(d,entries)
     kit.close()
@@ -3000,7 +3126,7 @@ do
     end
     rows[#rows+1]={{'上一页',function()books_page(items,(p-2)%pages+1)end},{'下一页 '..p..'/'..pages,function()books_page(items,p%pages+1)end}}
     rows[#rows+1]={{'返回累计',function()cumulative()end}}
-    kit.show({title='各词库进度',lines=#items==0 and {'尚未开始学习。'} or {},rows=rows,cancel=kit.close})
+    kit.show({title='词库进度',lines=#items==0 and {'尚未开始学习。'} or {},rows=rows,cancel=kit.close})
   end
   cumulative=function()
     local cached=kit.flow.summary_cache
@@ -3008,12 +3134,12 @@ do
       local studied,due,wrong,items,t=data.studied,data.due,data.wrong,data.items,data.t
       local lastday=tonumber(t.lastday);local streak=tonumber(t.streak) or 0
       if not lastday or lastday<today()-1 then streak=0 end
-      kit.show({title='累计学习',lines={
+      kit.show({title='累计总结',lines={
         '已学 '..studied..' 词条 · '..#items..' 本词库',
         '待复习 '..due..' · 错词 '..wrong,
         '学习 '..(tonumber(t.days) or 0)..' 天 · 连续 '..streak..' 天',
         '累计复习 '..(tonumber(t.review_total) or 0)..' 次'},rows={
-        {{'各词库进度',function()books_page(items)end}},
+        {{'词库进度',function()books_page(items)end}},
         {{'今日错词',function()today_errors()end},{'统计说明',summary_help}},
         {{'今日',function()show_today()end},{'关闭',kit.close}}},cancel=kit.close})
     end
@@ -3022,10 +3148,10 @@ do
       boot_task=nil;boot_serial=boot_serial+1;boot_error=nil;ERR=nil
       show_today()
     end
-    kit.show({title='累计总结',lines={'正在整理总结…'},rows={{{'返回',cancel}}},cancel=cancel})
+    kit.show({title='累计总结',progress={stage='统计词库',done=0,total=#decks},rows={{{'返回',cancel}}},cancel=cancel})
     start_loading('统计学习进度',function()
       local studied,due,wrong=0,0,0;local items={};local expires=now_sec()+300
-      for _,d in ipairs(decks) do
+      for i,d in ipairs(decks) do
         boot_checkpoint();local count=summary(d);d.due=count
         studied=studied+(d.studied or 0);due=due+count
         expires=math.min(expires,d.summary_refresh_at or expires)
@@ -3034,6 +3160,7 @@ do
           wrong=wrong+1;n=n+1;if n%32==0 then boot_checkpoint() end
         end
         if (d.studied or 0)>0 then items[#items+1]=d end
+        kit.flow.progress('统计词库',i,#decks)
       end
       local data={studied=studied,due=due,wrong=wrong,items=items,t=kv(sread('daily.txt')),day=today(),seq=P.load().seq,expires=expires}
       kit.flow.summary_cache=data;present(data)
@@ -3043,7 +3170,7 @@ do
     local t=daily_stats();local raw=kv(sread('daily.txt'));local attempts=tonumber(raw.day)==today() and (tonumber(raw.first_attempts) or 0) or 0
     local correct=tonumber(raw.first_correct) or 0
     local rate=attempts>0 and string.format('%.0f%%',correct/attempts*100) or '暂无记录'
-    kit.show({title='今日学习',lines={'新学 '..t.fresh..' 词条','复习 '..t.review..' 次 · 答错 '..t.wrong..' 次','首次答对率 '..rate},rows={
+    kit.show({title='今日总结',lines={'新学 '..t.fresh..' 词条','复习 '..t.review..' 次 · 答错 '..t.wrong..' 次','首次答对率 '..rate},rows={
       {{'复习今日错词',function()today_errors()end}},
       {{'累计总结',function()cumulative()end},{'统计说明',summary_help}},
       {{'关闭',kit.close}}},cancel=kit.close})
@@ -3054,24 +3181,28 @@ local toggle_new_order
 toggle_new_order=function()
   local current=new_word_order()
   local function select(value)
+    if value==current then kit.flow.no_refresh=true;return end
     swrite('new_word_order.txt',value)
     toggle_new_order()
   end
-  kit.show({title='新词顺序',lines={'当前：'..(current=='random' and '随机' or '顺序'),'下次进入词库生效。'},rows={
+  kit.show({title='新词顺序',keep_pending=true,lines={'当前：'..(current=='random' and '随机' or '顺序'),'下次进入词库生效。'},rows={
     {{'随机'..(current=='random' and '（已选）' or ''),function() select('random') end}},
     {{'顺序'..(current=='sequence' and '（已选）' or ''),function() select('sequence') end}},
-    {{'完成',kit.close}}},cancel=kit.close})
+    {{'返回设置',function()show_settings()end}}},cancel=function()show_settings()end})
 end
 do
   local manage_menu,show_daily,run_management
   local function reload_management(target)
+    kit.study.context=nil;kit.study.header_job=nil;kit.study.entries=nil;kit.study.index_slots=nil;kit.study.index_scope=nil;kit.study.plan=nil;kit.study.visible=nil;kit.previous={}
+    kit.study.index_cache=nil;kit.study.index_cache_no=nil;kit.study.book_position=nil
+    kit.study.custom_plan=nil;kit.study.pending_ref=nil;kit.study.own_refs=nil
     small_cache={};kit.flow.progress_cache=nil;generations={};favorite_cache=nil
     cache.key=nil;cache.rows=nil;file_cache.name=nil;file_cache.text=nil
     exercise=nil;last=nil;queue={};own={};own_prog={};dels={}
     library_query='';favorites_only=false;library_folder=nil;folder_pages={};page=0
     load_settings();screen='decks';deck=nil;session.done=0
     st=target and load_state(target) or nil
-    for _,d in ipairs(decks) do d.summary_day=nil;d.studied=nil;d.due=nil;d.new=nil;d.last_studied=nil end
+    for _,d in ipairs(decks) do d.summary_day=nil;d.studied=nil;d.due=nil;d.new=nil;d.last_studied=nil;d.header_until=nil;d.wrong_empty=nil end
     release_memory()
   end
   run_management=function(kind,target)
@@ -3092,11 +3223,11 @@ do
     end)
   end
   management_confirm=function(kind,target)
-    local titles={progress='重置全部学习进度？',settings='恢复默认设置？',deck='确定重置进度吗？',restore='恢复上次备份？'}
+    local titles={progress='重置全部词库学习进度？',settings='恢复默认设置？',deck='重置本词库学习进度？',restore='恢复上次备份？'}
     local descriptions={
-      progress={'清空所有词库进度、错词本、','学习统计和最近练习。','保留词库、个人词卡、收藏和设置。'},
+      progress={'清空所有词库进度、错题本、','学习统计和最近练习。','保留词库、个人词卡、收藏和设置。'},
       settings={'恢复每日新词15、随机新词顺序、','全部组合题型及默认练习偏好。','保留全部学习进度、词卡和收藏。'},
-      deck={target and fit_label(target.name,390,'small') or '', '只重置这本词库的进度和错词本。','保留词卡、收藏、统计和其他词库。'},
+      deck={target and fit_label(target.name,390,'small') or '', '只重置这本词库的进度和错题本。','保留词卡、收藏、统计和其他词库。'},
       restore={'将覆盖上次重置范围内的新记录。','其他内容保持不变。','恢复成功后，该备份入口将清空。'}
     }
     local lines_=descriptions[kind]
@@ -3107,7 +3238,7 @@ do
     local kind=P.load().kind
     local names={progress='全部学习进度',settings='偏好设置',deck='单本词库进度'}
     kit.show({title='备份与重置',lines={names[kind] and ('上次备份：'..names[kind]) or '暂无重置备份。','备份保存在本机；卸载应用会丢失。'},rows={
-      {{'重置全部学习进度',function()management_confirm('progress')end}},
+      {{'重置全部词库学习进度',function()management_confirm('progress')end}},
       {{'恢复默认设置',function()management_confirm('settings')end}},
       {{'恢复上次备份',function()management_confirm('restore')end,kind~=''}},
       {{'返回设置',function()show_settings()end}}
@@ -3119,30 +3250,29 @@ do
       local row={}
       for j=i,math.min(i+1,#NEW_CHOICES) do
         local n=NEW_CHOICES[j]
-        row[#row+1]={(n==0 and '无限制' or tostring(n))..(n==settings.new_per_day and '（已选）' or ''),function()settings.new_per_day=n;save_settings();show_daily()end}
+        row[#row+1]={(n==0 and '无限制' or tostring(n))..(n==settings.new_per_day and '（已选）' or ''),function()if n==settings.new_per_day then kit.flow.no_refresh=true;return end;settings.new_per_day=n;save_settings();show_daily()end}
       end
       rows[#rows+1]=row
     end
     rows[#rows+1]={{'返回设置',function()show_settings()end}}
-    kit.show({title='每日新词数量',lines={'每本词库的每日上限'},rows=rows,cancel=function()show_settings()end})
+    kit.show({title='每日新词',keep_pending=true,lines={'每本词库的每日上限'},rows=rows,cancel=function()show_settings()end})
   end
   show_settings=function()
-    kit.show({title='设置',rows={
-      {{'每日新词：'..kit.flow.daily_label(),show_daily}},
-      {{'新词顺序：'..(new_word_order()=='random' and '随机' or '顺序'),toggle_new_order}},
-      {{'自定义随机组合',random_settings}},
-      {{'备份与重置',manage_menu}},
-      {{'关于墨词',function()
-        kit.show({title='墨词 InkWords',lines={'版本：1.5.4 正式版','作者：WarlockDi','e99866@outlook.com','已安装词库：'..(#decks-1)..' 本','适用设备：阅星瞳 X4 Pro','中英文练习 · 本地保存进度'},rows={{{'返回设置',function()show_settings()end}}},cancel=function()show_settings()end})
+    kit.show({title='设置',keep_pending=true,settings=true,rows={
+      {{'每日新词',show_daily,value=kit.flow.daily_label()}},
+      {{'新词顺序',toggle_new_order,value=new_word_order()=='random' and '随机' or '顺序'}},
+      {{'组合题型',random_settings},{'使用帮助',function()kit.study.help(1,show_settings)end}},
+      {{'备份与重置',manage_menu},{'关于墨词',function()
+        kit.show({title='墨词 InkWords',keep_pending=true,lines={'版本：1.6.3','作者：WarlockDi','e99866@outlook.com','已安装词库：'..(#decks-1)..' 本','适用设备：阅星瞳 X4 Pro'},rows={{{'返回设置',function()show_settings()end}}},cancel=function()show_settings()end})
       end}},
-      {{'关闭',kit.close}}
+      {{'返回',kit.close}}
     },cancel=kit.close})
   end
 end
 
 local function library_tools()
   kit.show({title='更多',rows={
-    {{'学习总结',show_today}},
+    {{'高频错词',function()kit.study.open(true)end}},
     {{'搜索词库',function()
       kit.close();ctx.input:text({title='搜索词库名称',text=library_query,max_bytes=100},function(_,s)
         if s then library_query=s;page=0 end;request_visible_summaries();kit.refresh()
@@ -3171,44 +3301,730 @@ local function draw_decks(gg)
   end
 end
 local help_pages={
-  {'学习与进度','首页可继续上次学习。','最近练习保留最近五本词书。','菜单可切换题型、查看学习总结。','已学百分比不代表已经掌握。','显示答案后，该词会安排重学。'},
-  {'题型与例句','配对后保留单词与翻译。','点已配对的词可查看详情。','答题后可查看各选项的释义。','填空自动跳过暂无适用例句的词。','句子讲解包含完整例句和译文。'},
-  {'设置与保存','设置可调整每日新词与学习顺序。','学习进度自动保存。','重置需要确认，并保留最近一次备份。','覆盖安装时不要卸载旧程序。','包含新版词库时，需同时更新AppFiles。'}
+  {'学习与进度','首页可继续上次学习。','最近练习保留最近五本词库。','每日新词可选数量或无限制。','今日已学按本词库不同词条计数。','升级前当天的逐词数量无法补算。','已学比例不等于掌握程度。'},
+  {'题型与回看','菜单中可切换练习题型。','随机组合使用设置中勾选的题型。','拼写直接点字母，无需键盘。','配对可先点中文，也可先点英文。','上一题只回看，不撤销或重复计分。'},
+  {'词表与释义','菜单中的单词本可浏览整本词库。','左右两列为英文和中文释义。','底部显示当前页与总页数。','可点按钮或用设备翻页键翻页。','长释义点开看完整内容。','答题后可查看各选项释义及例句。'},
+  {'错题与来源','错题本可直接开始复习。','筛选可查看全部、未掌握、已掌握。','掌握后保留记录并显示勾。','高频错词汇总跨词库的多次错词。','同拼写合并展示，各来源释义保留。','详情可切换来源，各自记录掌握情况。'},
+  {'设置与例句','每日新词为每本词库的每日上限。','新词顺序可选随机或顺序。','组合题型点整行切换，勾表示选中。','至少保留一种组合题型。','例句填空跳过没有适用例句的词。','答题后可查看完整句子与译文。'},
+  {'保存与重置','学习进度自动保存。','词库管理可重置本词库学习进度。','设置可重置全部词库学习进度。','恢复默认设置不会清空学习进度。','重置须确认，可恢复最近一次备份。','更新时覆盖安装，不用卸载旧程序。'}
 }
 
 local show_help
-show_help=function(p)
-  local source=help_pages[p];local ls={}
+show_help=function(p,back)
+  local source=help_pages[p];local ls={};local total=#help_pages
   for i=2,#source do for _,line in ipairs(wrapped_text(source[i],400,'small')) do ls[#ls+1]=line end end
-  kit.show({title='帮助 '..p..'/3 · '..source[1],lines=ls,
-    rows={{{'上一页',function() show_help((p-2)%3+1) end},{'下一页',function() show_help(p%3+1) end}},{{'关闭',kit.close}}},cancel=kit.close})
+  kit.show({title='帮助 '..p..'/'..total..' · '..source[1],keep_pending=true,lines=ls,
+    rows={{{'上一页',function()show_help(p-1,back)end,p>1},{'下一页',function()show_help(p+1,back)end,p<total}},
+      {{'返回',back or kit.close}}},cancel=back or kit.close})
 end
+kit.study.help=show_help
 
 local DECK_BUTTONS = {
   { function() return '设置' end,show_settings },
   { function() return '更多' end, library_tools },
-  { function() return '帮助' end, function()
-      show_help(1)
-    end },
+  { function() return '总结' end,show_today },
   { function() return '页 ' .. (page + 1) .. '/' .. math.max(1, math.ceil(#library_view() / ROWS)) end, function()
       page = (page + 1) % math.max(1, math.ceil(#library_view() / ROWS))
     end },
 }
 
+function kit.study.manage()
+  kit.show({title='词库管理',rows={
+    {{'添加词卡',function()kit.close();add_card(deck)end}},
+    {{'删除词卡',function()
+      kit.show({title='删除当前词卡？',lines={'本词库将不再显示这张词卡。'},rows={
+        {{'取消',kit.close},{'删除',function()kit.close();delete_current();exercise=nil end}}},cancel=kit.close})
+    end,screen=='study' and not kit.previous.viewing}},
+    {{'重置本词库学习进度',confirm_reset_progress}},
+    {{'返回',kit.close}}},cancel=kit.close})
+end
 local function menu()
-  kit.show({ title = fit_label(deck.name,390,'medium'), lines = { '已完成 '..session.done .. ' 词条' },
-             rows = { { { '切换练习模式', function() choose_mode(deck,true) end } },
-                      {{'设置',show_settings}},
-                      {{'错词本',function() wrong_book(1) end},{'学习总结',show_today}},
-                      {{'重置进度',confirm_reset_progress}}, { { '撤销', function() kit.close(); undo(); exercise=nil end, last ~= nil },
-                        { '添加词卡', function() kit.close(); add_card(deck) end } },
-                      { { '删除词卡', function()
-                            kit.show({ title = '删除当前词卡？', lines = { '删除后，本词库将不再显示这张词卡。' },
-                                       rows = { { { '删除', function() kit.close(); delete_current(); exercise=nil end }, { '取消', kit.close } } },
-                                       cancel = kit.close })
-                          end, screen == 'study' },
-                        { '回到词库', function() kit.close(); show_decks(); exercise=nil end } } },
-             cancel = kit.close })
+  if kit.previous.viewing then
+    kit.show({title='上一题',keep_pending=true,rows={{{'返回当前题',function()kit.close();kit.previous.restore()end}},
+      {{'回到词库',function()kit.close();show_decks()end}}},cancel=kit.close});return
+  end
+  kit.show({title=fit_label(deck.name,390,'medium'),keep_pending=true,rows={
+    {{'切换题型',function()choose_mode(deck,true)end}},
+    {{'单词本',function()kit.study.book(deck)end},{'错题本',function()kit.study.open(false)end}},
+    {{'上一题',function()kit.study.previous()end,kit.previous.last~=nil},{'学习总结',show_today}},
+    {{'词库管理',kit.study.manage},{'设置',show_settings}},
+    {{'回到词库',function()kit.close();show_decks()end}}},cancel=kit.close})
+end
+
+-- Word-list, source-aware wrong-word review and incremental daily statistics.
+function kit.study.header(d,background)
+  local R=kit.study;local revision=R.revision or 0;local generation=P.load().seq
+  local day=today();local now=now_sec()
+  if d.header_day==day and d.header_revision==revision and d.header_generation==generation and now<(d.header_until or 0) then return end
+  local learned,due_count,incomplete=0,0,false
+  local ok,clock=pcall(function()return ctx.clock:now()end)
+  local wall=ok and clock and ((tonumber(clock.hour) or 0)*3600+(tonumber(clock.minute) or 0)*60+(tonumber(clock.second) or 0)) or now%86400
+  local expires=now+86400-wall
+  local mins=st.mins
+  for sh,_ in pairs(mins) do
+    local n=0
+    for line in lines(progress_text(d,sh)) do
+      local key,due=line:match('^(%S+) (%-?%d+) ')
+      if key and not dels[tostring(sh)..':'..key] then
+        local fields={};for x in line:gmatch('%S+') do fields[#fields+1]=x end
+        local learned_day=tonumber(fields[11]) or 0
+        if learned_day==day then learned=learned+1 end
+        if learned_day==0 and R.stats_since==day then incomplete=true end
+        local due_at=tonumber(due)
+        if due_at<=now then due_count=due_count+1 else expires=math.min(expires,due_at) end
+      end
+      n=n+1
+      if n%25==0 then if background then coroutine.yield() else boot_checkpoint() end end
+    end
+    if background then coroutine.yield() end
+  end
+  if deck~=d or revision~=(R.revision or 0) or generation~=P.load().seq or day~=today() then return end
+  d.today_learned=learned;d.header_due=due_count;d.header_incomplete=incomplete;d.header_day=day
+  d.header_revision=revision;d.header_generation=generation;d.header_until=expires
+end
+-- One bounded, cancellable idle job. No writes and no full-deck scan on a tap.
+function kit.study.refresh_header()
+  local R=kit.study;local d=deck
+  if R.header_job or not d or boot_task or storage_error or kit.flow.left or kit.modal() or screen~='study' or type(ctx.after)~='function' then return end
+  if d.header_day==today() and d.header_revision==(R.revision or 0) and d.header_generation==P.load().seq and now_sec()<(d.header_until or 0) then return end
+  local job={d=d,input=kit.flow.input_serial,revision=R.revision or 0}
+  job.co=coroutine.create(function()R.header(d,true)end);R.header_job=job
+  local step
+  local function later()
+    local ok,result,why=pcall(function()return ctx:after(32,step)end)
+    if not ok or result==false or (result==nil and why~=nil) then if R.header_job==job then R.header_job=nil end end
+  end
+  step=function()
+    if R.header_job~=job then return end
+    if deck~=job.d or screen~='study' or boot_task or storage_error or kit.flow.left or job.input~=kit.flow.input_serial or job.revision~=(R.revision or 0) then R.header_job=nil;return end
+    local ok=coroutine.resume(job.co)
+    if not ok then R.header_job=nil;d.header_until=now_sec()+60;return end
+    if coroutine.status(job.co)=='dead' then R.header_job=nil;kit.refresh() else later() end
+  end
+  later()
+end
+function kit.study.previous()
+  if not kit.previous.last or kit.previous.viewing then return end
+  if kit.previous.last.flash then
+    local c=kit.previous.last.flash;local ls=wrapped_text(c.b,400,'small');local p=1
+    local function show()
+      local rows={};for i=(p-1)*8+1,math.min(p*8,#ls) do rows[#rows+1]=ls[i] end
+      local pages=math.max(1,math.ceil(#ls/8))
+      kit.show({title=fit_label(c.f,390,'medium'),lines=rows,rows={
+        {{'上一页',function()p=p-1;show()end,p>1},{'下一页',function()p=p+1;show()end,p<pages}},
+        {{'下一题',kit.close}}},cancel=kit.close})
+    end
+    show();return
+  end
+  kit.flow.cancel_prefetch(true);kit.close()
+  kit.previous.current={question=exercise,mode=mode,screen=screen}
+  exercise=kit.previous.last.question;mode=kit.previous.last.mode
+  kit.previous.viewing=true;screen='study';kit.evict_prompt()
+  kit.previous.restore=function()
+    local v=kit.previous.current
+    exercise=v.question;mode=v.mode;screen=v.screen
+    kit.previous.current=nil;kit.previous.viewing=false;kit.evict_prompt()
+  end
+end
+function kit.study.mastered(rec)
+  return rec and rec.state=='r' and (rec.evidence or 0)>=3
+end
+function kit.study.card(d,e)
+  if e.s=='own' then
+    for line in lines(sread(d.key..'_own.txt') or '') do
+      local id,f,b=line:match('^([^\t]+)\t([^\t]*)\t?(.*)$')
+      if id==e.l then return {f=unesc(f),b=unesc(b)} end
+    end
+  else return shard(d,e.s)[e.l+1] end
+end
+function kit.study.matches(e)
+  return kit.study.filter=='全部' or (kit.study.filter=='已掌握')==e.mastered
+end
+-- Derived wrong-word index: bounded buffers and sorted disk runs. Never contains
+-- canonical learning progress; interrupted construction is simply rebuilt.
+function kit.flow.progress(stage,done,total)
+  local m=kit.modal();local p=m and m.progress
+  if not p then return end
+  p.stage=stage;p.done=done or 0;p.total=total or 0
+end
+function kit.study.digest(s)
+  -- Keep every intermediate below 131041, exact even with 32-bit Lua floats.
+  -- Format the two halves separately: no unsigned literal, shift or wide multiply.
+  local a,b=1,0
+  for i=1,#s do a=(a+s:byte(i))%65521;b=(b+a)%65521 end
+  return string.format('%04x%04x',b,a)..':'..#s
+end
+function kit.study.signature(all,origin)
+  local R=kit.study;local parts={R.catalogue or '',tostring(P.load().seq),all and '*' or origin.key}
+  local books=all and decks or {origin}
+  for i,d in ipairs(books) do
+    kit.flow.progress('校验学习记录',i-1,#books)
+    local raw=sread(d.key..'_wrong.txt') or ''
+    if raw~='' then
+      parts[#parts+1]=d.key..'='..R.digest(raw)
+      parts[#parts+1]=R.digest(sread(d.key..'_del.txt') or '')
+      local seen={}
+      for sh in raw:gmatch('([^%s:]+):[^%s]+ %d+') do if not seen[sh] then
+        seen[sh]=true
+        parts[#parts+1]=sh..'='..R.digest(progress_text(d,sh=='own' and sh or tonumber(sh)))
+        if sh=='own' then parts[#parts+1]=R.digest(sread(d.key..'_own.txt') or '') end
+      end end
+    end
+    boot_checkpoint()
+  end
+  return R.digest(table.concat(parts,'\n'))
+end
+-- Only derived files are cached. Canonical progress is never restored from them.
+function kit.study.persist(signature)
+  local R=kit.study;local prefix=R.index_prefix
+  local rows={signature,tostring(R.index_count),tostring(R.mastered_count)}
+  swrite(prefix..'ready.txt','')
+  for part=1,math.ceil(R.index_count/32) do
+    kit.flow.progress('保存整理结果',part-1,math.ceil(R.index_count/32))
+    local raw
+    if R.memory_index then
+      local out={};for i=(part-1)*32+1,math.min(part*32,R.index_count) do out[#out+1]=R.pack(R.entries[i]) end
+      raw=table.concat(out,'\n');swrite(prefix..'idx_'..part..'.txt',raw)
+    else raw=sread(prefix..'idx_'..part..'.txt') end
+    if type(raw)~='string' then error('错词索引未完成，请重新打开。') end
+    rows[#rows+1]=R.digest(raw);collect_if_needed();boot_checkpoint()
+  end
+  local body=table.concat(rows,'\n');local value=R.digest(body)..'\n'..body
+  swrite(prefix..'ready.txt',value)
+  if sread(prefix..'ready.txt')~=value then error('错词索引保存未完成，请重新打开。') end
+end
+function kit.study.restore_index(signature)
+  local R=kit.study;local value=sread(R.index_prefix..'ready.txt') or ''
+  local hash,body=value:match('^([^\n]+)\n(.*)$')
+  if not hash or R.digest(body)~=hash then return false end
+  local rows={};for row in body:gmatch('[^\n]+') do rows[#rows+1]=row end
+  if rows[1]~=signature then return false end
+  local count,mastered=tonumber(rows[2]),tonumber(rows[3])
+  if not count or count<0 or count%1~=0 or not mastered or mastered<0 or mastered>count or #rows~=3+math.ceil(count/32) then return false end
+  local small=count<=64 and {} or nil;R.book_map={};for _,d in ipairs(decks) do R.book_map[d.key]=d end
+  for part=1,math.ceil(count/32) do
+    kit.flow.progress('读取错词列表',part-1,math.ceil(count/32))
+    local raw=sread(R.index_prefix..'idx_'..part..'.txt')
+    if type(raw)~='string' or R.digest(raw)~=rows[part+3] then return false end
+    local n=0
+    for line in raw:gmatch('[^\n]+') do
+      n=n+1;local ok,e=pcall(R.unpack,line)
+      if not ok or #e.refs==0 then return false end
+      if small then small[#small+1]=e end
+    end
+    if n~=math.min(32,count-(part-1)*32) then return false end
+    collect_if_needed();boot_checkpoint()
+  end
+  R.index_count=count;R.mastered_count=mastered;R.memory_index=small~=nil
+  R.entries=small or setmetatable({},{__len=function()return R.index_count end,__index=function(_,i)if type(i)=='number' then return R.index_read(i)end end})
+  R.index_cache=nil;R.index_cache_no=nil;return true
+end
+-- One small source block at a time. Count changes reuse known spellings;
+-- new wrong words alone require dictionary reads. No work on the answer path.
+function kit.study.flush_words()
+  local R=kit.study;local c=R.word_cache
+  if c and c.dirty then
+    local out={};for row,f in pairs(c.words) do out[#out+1]=row..'\t'..R.encode(f) end
+    table.sort(out);local body=table.concat(out,'\n')
+    swrite(c.name,(R.catalogue or '')..'\n'..R.digest(body)..'\n'..body);c.dirty=false
+  end
+end
+function kit.study.index_word(d,e)
+  local R=kit.study
+  if e.s=='own' then local c=R.card(d,e);return c and word(c) end
+  local name='iw155word_'..d.key..'_'..e.s..'_'..(e.l//25)..'.txt';local c=R.word_cache
+  if not c or c.name~=name then
+    R.flush_words();R.word_cache=nil
+    local raw=sread(name) or '';local generation,hash,body=raw:match('^([^\n]+)\n([^\n]+)\n(.*)$')
+    c={name=name,words={}};R.word_cache=c
+    if generation==R.catalogue and body and #body<=40000 and R.digest(body)==hash then
+      for row,f in body:gmatch('([^\t\n]+)\t([^\n]*)') do c.words[row]=R.decode(f) end
+    end
+  end
+  local key=tostring(e.l);if c.words[key] then return c.words[key] end
+  local card=R.card(d,e);local f=card and word(card)
+  if f and #f<=512 then c.words[key]=f;c.dirty=true end
+  return f
+end
+function kit.study.encode(s)
+  return tostring(s):gsub('.',function(c)local n=c:byte();if (n>=48 and n<=57) or (n>=65 and n<=90) or (n>=97 and n<=122) or c=='_' or c=='.' or c=='-' then return c end;return string.format('%%%02X',n)end)
+end
+function kit.study.decode(s)
+  return (s:gsub('%%(%x%x)',function(h)return string.char(tonumber(h,16))end))
+end
+function kit.study.pack(e)
+  local R=kit.study;local refs={}
+  for _,v in ipairs(e.refs) do refs[#refs+1]=table.concat({v.d.key,R.encode(v.s),R.encode(v.l),v.errors or 0,v.mastered and 1 or 0,v.due or 0},':') end
+  return table.concat({R.encode(e.f),e.errors,e.mastered and 1 or 0,e.due,table.concat(refs,',')},'\t')
+end
+function kit.study.unpack(line)
+  local R=kit.study;local f,n,m,d,refs=line:match('^([^\t]+)\t(%d+)\t([01])\t([%d%-]+)\t(.*)$')
+  if not f then error('错词索引需要重新整理。') end
+  local e={f=R.decode(f),errors=tonumber(n),mastered=m=='1',due=tonumber(d),refs={}}
+  for k,raw_shard,raw_row,count,learned,raw_due in refs:gmatch('([^:,]+):([^:,]+):([^:,]+):(%d+):([01]):([%d%-]+)') do
+    local shard,row=R.decode(raw_shard),R.decode(raw_row);local book=R.book_map[k]
+    if book then e.refs[#e.refs+1]={d=book,s=shard=='own' and shard or tonumber(shard),l=shard=='own' and row or tonumber(row),errors=tonumber(count),mastered=learned=='1',due=tonumber(raw_due)} end
+  end
+  return e
+end
+function kit.study.rank(line)
+  local f,n,m,d=line:match('^([^\t]+)\t(%d+)\t([01])\t([%d%-]+)')
+  return {f=f,n=tonumber(n),m=tonumber(m),due=tonumber(d)<=now_sec() and 0 or 1}
+end
+function kit.study.before(a,b)
+  if a.m~=b.m then return a.m<b.m end
+  if a.due~=b.due then return a.due<b.due end
+  if a.n~=b.n then return a.n>b.n end
+  return a.f<b.f
+end
+function kit.study.index_read(i)
+  local R=kit.study;if i<1 or i>R.index_count then return nil end
+  local n=(i-1)//32+1
+  if R.index_cache_no~=n then R.index_cache=sread((R.index_prefix or 'iw155')..'idx_'..n..'.txt') or '';R.index_cache_no=n end
+  local at=0
+  for line in R.index_cache:gmatch('[^\n]+') do at=at+1;if at==(i-1)%32+1 then return R.unpack(line) end end
+  error('错词索引不完整，请重新打开错题本。')
+end
+function kit.study.hydrate(e)
+  if not e.b then
+    local ref=e.refs[1];local c=ref and kit.study.card(ref.d,ref)
+    e.b=(#e.refs>1 and ('多来源 · '..#e.refs..' 条\n') or '')..(c and meaning(c) or '词条不可用')
+  end
+  return e
+end
+-- Order only a small batch of identifiers; nearby words share a 25-card read.
+-- No full-library list or extra writes in this ordering iterator.
+function kit.study.ordered_wrong_lines(raw)
+  local input=raw:gmatch('[^\n]+');local batch,pos={},1
+  return function()
+    if pos>#batch then
+      batch={};pos=1
+      for _=1,128 do
+        local line=input();if not line then break end
+        local sh,ln=line:match('^(%d+):(%d+) ')
+        local prefix=sh and string.format('%010d:%010d',tonumber(sh),tonumber(ln)) or 'z'
+        batch[#batch+1]=prefix..'\t'..line
+      end
+      table.sort(batch)
+    end
+    local line=batch[pos];pos=pos+1
+    return line and line:match('^[^\t]*\t(.*)$') or nil
+  end
+end
+function kit.study.build_index(all,origin)
+  local R=kit.study;R.entries=nil;R.index_cache=nil;R.index_cache_no=nil
+  R.book_map={};for _,d in ipairs(decks) do R.book_map[d.key]=d end
+  local progress_key,progress_raw
+  local function record(d,sh,key)
+    local id=d.key..':'..tostring(sh)
+    if progress_key~=id then
+      progress_key=nil;progress_raw=nil
+      local raw=progress_text(d,sh)
+      if #raw>65536 then return read_record(d,sh,key,raw) end
+      progress_key=id;progress_raw=raw
+    end
+    return read_record(d,sh,key,progress_raw)
+  end
+  kit.flow.progress('检查错词记录')
+  local sources,total={},0
+  for _,d in ipairs(all and decks or {origin}) do
+    local raw=d.wrong_empty and '' or (sread(d.key..'_wrong.txt') or '');local n=0
+    d.wrong_empty=raw==''
+    for _ in raw:gmatch('[^\n]+') do n=n+1 end
+    if n>0 then sources[#sources+1]=d;total=total+n end
+  end
+  R.memory_index=false
+  kit.flow.progress('整理错词',0,total)
+  local processed=0
+  if total<=64 then
+    local map={}
+    for _,d in ipairs(sources) do
+      local deleted={};for id in (sread(d.key..'_del.txt') or ''):gmatch('%S+') do deleted[id]=true end
+      for line in R.ordered_wrong_lines(sread(d.key..'_wrong.txt') or '') do
+        local sh,ln,count=line:match('^([^%s:]+):([^%s]+) (%d+)$')
+        if sh and not deleted[sh..':'..ln] then
+          local ref={d=d,s=sh=='own' and sh or tonumber(sh),l=sh=='own' and ln or tonumber(ln),errors=tonumber(count)}
+          local f=R.index_word(d,ref)
+          if f then
+            local key=f:lower():gsub('^%s+',''):gsub('%s+$',''):gsub('%s+',' ')
+            local rec=record(d,ref.s,ref.l)
+            ref.due=rec and rec.due or 0;ref.mastered=R.mastered(rec) and true or false
+            local e=map[key]
+            if e then e.errors=e.errors+ref.errors;e.mastered=e.mastered and ref.mastered;e.due=math.min(e.due,ref.due);e.refs[#e.refs+1]=ref
+            else map[key]={f=f,errors=ref.errors,mastered=ref.mastered,due=ref.due,refs={ref}} end
+          end
+        end
+        processed=processed+1;kit.flow.progress('整理错词',processed,total)
+        boot_checkpoint()
+      end
+    end
+    local entries={};R.mastered_count=0
+    for _,e in pairs(map) do if not all or e.errors>=2 then
+      entries[#entries+1]=e;if e.mastered then R.mastered_count=R.mastered_count+1 end
+    end end
+    table.sort(entries,function(a,b)
+      if a.mastered~=b.mastered then return not a.mastered end
+      if a.errors~=b.errors then return a.errors>b.errors end
+      return a.f<b.f
+    end)
+    R.entries=entries;R.index_count=#entries;R.memory_index=true;return
+  end
+  local bucket_count=1
+  while total>bucket_count*32 and bucket_count<128 do bucket_count=bucket_count*2 end
+  local buffers,raw_counts,runs={},{},{};local bytes=0
+  local function flush(b)
+    local value=buffers[b];if not value then return end
+    raw_counts[b]=(raw_counts[b] or 0)+1
+    swrite('iw155raw_'..b..'_'..raw_counts[b]..'.txt',value)
+    buffers[b]=nil;bytes=bytes-#value
+  end
+  for _,d in ipairs(sources) do
+    local deleted={};for id in (sread(d.key..'_del.txt') or ''):gmatch('%S+') do deleted[id]=true end
+    local raw=sread(d.key..'_wrong.txt') or '';local n=0
+    for line in R.ordered_wrong_lines(raw) do
+      local sh,ln,count=line:match('^([^%s:]+):([^%s]+) (%d+)$')
+      if sh and not deleted[sh..':'..ln] then
+        local e={s=sh=='own' and sh or tonumber(sh),l=sh=='own' and ln or tonumber(ln),errors=tonumber(count)}
+        local f=R.index_word(d,e)
+        if f then
+          local key=f:lower():gsub('^%s+',''):gsub('%s+$',''):gsub('%s+',' ')
+          local hash=0;for i=1,#key do hash=(hash*131+key:byte(i))%65521 end
+          local bucket=hash%bucket_count
+          local rec=record(d,e.s,e.l)
+          e.d=d;e.due=rec and rec.due or 0;e.mastered=R.mastered(rec) and true or false
+          local row=R.encode(key)..'\t'..R.pack({f=f,errors=e.errors,mastered=e.mastered,due=e.due,refs={e}})..'\n'
+          buffers[bucket]=(buffers[bucket] or '')..row;bytes=bytes+#row
+          if #buffers[bucket]>=4096 then flush(bucket) end
+          if bytes>=12288 then
+            local largest;for b,v in pairs(buffers) do if not largest or #v>#buffers[largest] then largest=b end end
+            flush(largest)
+          end
+        end
+      end
+      n=n+1;processed=processed+1;kit.flow.progress('整理错词',processed,total)
+      if n%16==0 then collect_if_needed();boot_checkpoint() end
+    end
+  end
+  for b in pairs(buffers) do flush(b) end
+  R.mastered_count=0
+  for b=0,bucket_count-1 do
+    kit.flow.progress('合并重复词',b,bucket_count)
+    if raw_counts[b] then
+    local map={}
+    for part=1,raw_counts[b] do
+      local text=sread('iw155raw_'..b..'_'..part..'.txt') or ''
+      for line in text:gmatch('[^\n]+') do
+        local key,value=line:match('^([^\t]+)\t(.*)$');local e=R.unpack(value);local old=map[key]
+        if old then
+          old.errors=old.errors+e.errors;old.mastered=old.mastered and e.mastered;old.due=math.min(old.due,e.due)
+          for _,ref in ipairs(e.refs) do old.refs[#old.refs+1]=ref end
+        else map[key]=e end
+      end
+      collect_if_needed();boot_checkpoint()
+    end
+    local sorted={}
+    for _,e in pairs(map) do if not all or e.errors>=2 then
+      local value=R.pack(e);sorted[#sorted+1]={line=value,rank=R.rank(value)}
+      if e.mastered then R.mastered_count=R.mastered_count+1 end
+    end end
+    map=nil
+    table.sort(sorted,function(a,c)return R.before(a.rank,c.rank)end)
+    local chunks=0
+    local run_size=bucket_count<=16 and 32 or 4 -- Reserve heap for the loading dialog.
+    for i=1,#sorted,run_size do
+      local out={};for j=i,math.min(i+run_size-1,#sorted) do out[#out+1]=sorted[j].line end
+      chunks=chunks+1;swrite('iw155run_'..b..'_'..chunks..'.txt',table.concat(out,'\n'))
+    end
+    if chunks>0 then runs[#runs+1]={bucket=b,chunks=chunks,chunk=0,rows={},pos=0} end
+    for i=1,raw_counts[b] do sremove('iw155raw_'..b..'_'..i..'.txt') end
+    collect_if_needed();boot_checkpoint()
+  end end
+  local function next_line(run)
+    run.pos=run.pos+1
+    if not run.rows[run.pos] then
+      run.chunk=run.chunk+1;if run.chunk>run.chunks then run.head=nil;run.rows=nil;return end
+      run.rows={};for line in (sread('iw155run_'..run.bucket..'_'..run.chunk..'.txt') or ''):gmatch('[^\n]+') do run.rows[#run.rows+1]=line end
+      run.pos=1
+    end
+    run.head=run.rows[run.pos];run.rank=R.rank(run.head)
+  end
+  for _,run in ipairs(runs) do next_line(run) end
+  local out,count,chunks={},0,0
+  local old_chunks=tonumber(sread((R.index_prefix or 'iw155')..'index_meta.txt')) or 0
+  kit.flow.progress('排序错词')
+  while true do
+    local best
+    for _,run in ipairs(runs) do if run.head and (not best or R.before(run.rank,best.rank)) then best=run end end
+    if not best then break end
+    count=count+1;out[#out+1]=best.head;next_line(best)
+    if #out==32 then chunks=chunks+1;swrite((R.index_prefix or 'iw155')..'idx_'..chunks..'.txt',table.concat(out,'\n'));out={} end
+    if count%32==0 then collect_if_needed();boot_checkpoint() end
+  end
+  if #out>0 then chunks=chunks+1;swrite((R.index_prefix or 'iw155')..'idx_'..chunks..'.txt',table.concat(out,'\n')) end
+  for _,run in ipairs(runs) do for i=1,run.chunks do sremove('iw155run_'..run.bucket..'_'..i..'.txt') end end
+  for i=chunks+1,old_chunks do sremove((R.index_prefix or 'iw155')..'idx_'..i..'.txt') end
+  swrite((R.index_prefix or 'iw155')..'index_meta.txt',tostring(chunks))
+  R.index_count=count;R.index_cache=nil;R.index_cache_no=nil
+  R.entries=setmetatable({},{__len=function()return R.index_count end,__index=function(_,i)if type(i)=='number' then return R.index_read(i)end end})
+end
+function kit.study.next_ref()
+  local R=kit.study
+  if R.custom_plan then local v=R.custom_plan[R.custom_cursor];R.custom_cursor=R.custom_cursor+1;return v end
+  while R.review_item<=#R.entries do
+    local item=R.entries[R.review_item]
+    if R.matches(item) then
+      while R.review_ref<=#item.refs do
+        local ref=item.refs[R.review_ref];R.review_ref=R.review_ref+1
+        if R.filter=='全部' or (R.filter=='已掌握')==ref.mastered then return ref end
+      end
+    end
+    R.review_item=R.review_item+1;R.review_ref=1
+  end
+end
+
+function kit.study.open(all,origin)
+  local R=kit.study
+  local fields={'entries','index_count','mastered_count','memory_index','book_map','index_prefix','index_scope','index_revision','index_generation','index_membership'}
+  R.index_slots=R.index_slots or {}
+  if R.entries and R.index_scope then
+    local slot={};for _,k in ipairs(fields) do slot[k]=R[k] end
+    R.index_slots[R.index_scope=='*' and 'all' or 'book']=slot
+  end
+  R.context=true;R.plan=nil;R.all=all;R.origin=origin or deck;R.filter='未掌握';R.page=1;R.starts={0}
+  local scope=all and '*' or (R.origin and R.origin.key);local key=all and 'all' or 'book'
+  local slot=R.index_slots[key]
+  local usable=slot and slot.index_scope==scope and slot.index_generation==P.load().seq and slot.index_membership==(R.membership_revision or 0)
+  R.index_cache=nil;R.index_cache_no=nil
+  if usable then for _,k in ipairs(fields) do R[k]=slot[k] end
+    if R.index_revision==(R.revision or 0) then R.home();return end
+  else
+    R.entries=nil;R.book_map=nil;R.index_prefix=all and 'iw155a' or 'iw155b'
+  end
+  -- Invalidated work is never reused after cancellation or a failed build.
+  R.index_scope=nil;R.index_slots[key]=nil
+  local ok,used=pcall(function()return ctx.gc:count()end)
+  local other=R.index_slots[all and 'book' or 'all']
+  if other and other.memory_index and ok and used>700000 then R.index_slots[all and 'book' or 'all']=nil end
+  local function cancel()
+    boot_task=nil;boot_serial=boot_serial+1;boot_error=nil;ERR=nil
+    R.context=nil;kit.close();kit.refresh()
+  end
+  kit.show({title=all and '高频错词' or '错题本',progress={stage='正在准备'},rows={{{'返回',cancel}}},cancel=cancel})
+  kit.refresh()
+  start_loading(usable and '更新错词进度' or '整理错词',function()
+    local signature=R.signature(all,R.origin)
+    local restored=not usable and R.restore_index(signature)
+    if not restored then
+      swrite(R.index_prefix..'ready.txt','')
+      if usable then R.refresh_records() else R.build_index(all,R.origin) end
+      R.flush_words();R.word_cache=nil;R.persist(signature)
+    end
+    R.index_scope=scope;R.index_revision=R.revision or 0
+    R.index_generation=P.load().seq;R.index_membership=R.membership_revision or 0;R.home()
+  end,true)
+end
+function kit.study.refresh_records()
+  local R=kit.study;R.mastered_count=0
+  swrite((R.index_prefix or 'iw155')..'ready.txt','')
+  for part=1,math.ceil(R.index_count/32) do
+    kit.flow.progress('更新复习进度',part-1,math.ceil(R.index_count/32))
+    local rows={};local changed=false
+    for i=(part-1)*32+1,math.min(part*32,R.index_count) do
+      local item=R.entries[i];local old_mastered,old_due=item.mastered,item.due;item.mastered=true;item.due=math.huge
+      for _,ref in ipairs(item.refs) do
+        local rec=read_record(ref.d,ref.s,ref.l)
+        local mastered=R.mastered(rec) and true or false;local due=rec and rec.due or 0
+        if ref.mastered~=mastered or ref.due~=due then changed=true end
+        ref.mastered=mastered;ref.due=due
+        item.mastered=item.mastered and ref.mastered;item.due=math.min(item.due,ref.due)
+      end
+      if item.mastered~=old_mastered or item.due~=old_due then changed=true end
+      if item.mastered then R.mastered_count=R.mastered_count+1 end
+      rows[#rows+1]=R.pack(item)
+    end
+    if changed and not R.memory_index then swrite((R.index_prefix or 'iw155')..'idx_'..part..'.txt',table.concat(rows,'\n')) end
+    R.index_cache_no=nil;collect_if_needed();boot_checkpoint()
+  end
+end
+function kit.study.home()
+  local R=kit.study;local function close()R.context=nil;kit.close()end;local learned=R.mastered_count or 0
+  local count=R.filter=='全部' and #R.entries or (R.filter=='已掌握' and learned or #R.entries-learned)
+  kit.show({title=R.all and '高频错词' or '错题本',lines={
+    R.all and ('汇总 '..#R.entries..' 词') or fit_label(R.origin.name,390,'small'),
+    '未掌握 '..(#R.entries-learned)..' · 已掌握 '..learned},rows={
+    {{'开始复习',function()R.review()end,count>0}},
+    {{'单词本',function()R.page=1;R.starts={0};R.list(false)end}},
+    {{'筛选',function()R.options(false)end},{'返回',close}}},cancel=close})
+end
+function kit.study.options(list)
+  local R=kit.study;local rows={}
+  for _,label in ipairs({'全部','未掌握','已掌握'}) do
+    local chosen=label
+    rows[#rows+1]={{label..(R.filter==label and '（已选）' or ''),function()
+      R.filter=chosen;R.page=1;R.starts={0};if list then R.list(false) else R.home() end
+    end}}
+  end
+  if list then rows[#rows+1]={{'返回错题本',R.close}} end
+  rows[#rows+1]={{'返回',function()if list then kit.close() else R.home() end end}}
+  kit.show({title='错词筛选',rows=rows,cancel=function()if list then kit.close() else R.home() end end})
+end
+
+function kit.study.review(refs)
+  local R=kit.study;R.plan=true;R.reviewed=0;R.review_item=1;R.review_ref=1
+  R.custom_plan=refs;R.custom_cursor=1;R.pending_ref=nil;R.advance()
+end
+function kit.study.advance()
+  local R=kit.study
+  start_loading('准备错词练习',function()
+    local ref=R.pending_ref or R.next_ref();R.pending_ref=nil
+    if not ref then
+      R.plan=nil;exercise=nil;queue={};kit.previous={};screen='done';R.refresh_records()
+      if R.index_scope and R.index_membership==(R.membership_revision or 0) then R.persist(R.signature(R.all,R.origin)) end
+      kit.show({title='本轮复习完成',lines={'已练习 '..(R.reviewed or 0)..' 词'},rows={
+        {{'返回错题本',R.home},{'回到词库',function()kit.close();show_decks()end}}},cancel=R.home})
+      return
+    end
+    mode='quiz';random_mix=false;open_deck_sync(ref.d,{{s=ref.s,l=ref.l}})
+    local n=1
+    while n<20 do
+      local e=R.next_ref();if not e then break end
+      if e.d~=ref.d then R.pending_ref=e;break end
+      queue[#queue+1]={s=e.s,l=e.l};n=n+1
+    end
+    exercise=nil;screen='study';shown=false;scroll=0
+  end)
+end
+function kit.study.read_own_refs(d)
+  local result={};local deleted={}
+  for id in (sread(d.key..'_del.txt') or ''):gmatch('%S+') do deleted[id]=true end
+  for line in lines(sread(d.key..'_own.txt') or '') do
+    local id=line:match('^([^\t]+)\t');if id and not deleted['own:'..id] then result[#result+1]={s='own',l=id,d=d} end
+  end
+  return result
+end
+function kit.study.book(d)
+  local R=kit.study;R.book_deck=d
+  local deleted=sread(d.key..'_del.txt') or '';local hash=0
+  for i=1,#deleted do hash=(hash*131+deleted:byte(i))%65521 end
+  R.book_signature=tostring(d.cards)..':'..#deleted..':'..hash
+  local saved=R.book_position
+  if saved and saved.key==d.key and saved.generation==P.load().seq and saved.signature==R.book_signature then
+    R.page=saved.page;R.starts=saved.starts
+  else R.page=1;R.starts={0} end
+  R.own_refs=d.source=='own' and R.read_own_refs(d) or nil
+  R.list(true)
+end
+function kit.study.list(ordinary)
+  local R=kit.study;kit.close();R.ordinary=ordinary
+  if screen~='wordlist' then R.return_screen=screen end
+  screen='wordlist';R.visible={};R.starts=R.starts or {0};R.page=R.page or 1
+  local index=R.starts[R.page] or 0;local y=108
+  local deleted={}
+  local d=ordinary and R.book_deck
+  if d then for id in (sread(d.key..'_del.txt') or ''):gmatch('%S+') do deleted[id]=true end end
+  local total=ordinary and (d.source=='own' and #(R.own_refs or {}) or d.cards) or #R.entries
+  local available=total
+  if ordinary then
+    for id in pairs(deleted) do
+      local sh,ln=id:match('^(%d+):(%d+)$')
+      if sh and tonumber(sh)*d.per+tonumber(ln)<total then available=available-1 end
+    end
+  else available=R.filter=='全部' and total or (R.filter=='已掌握' and R.mastered_count or total-R.mastered_count) end
+  R.total_pages=math.max(1,math.ceil(available/8))
+  while index<total and #R.visible<8 do
+    local item
+    if ordinary then
+      local ref=d.source=='own' and R.own_refs[index+1] or {s=index//d.per,l=index%d.per,d=d}
+      if not deleted[entry_id(ref)] then
+        local c=R.card(d,ref);if c then item={f=word(c),b=meaning(c),refs={ref}} end
+      end
+    else local e=R.entries[index+1];if R.matches(e) then item=R.hydrate(e) end end
+    if item then
+      local left=wrapped_text(item.f,176,'medium');local right=wrapped_text(item.b,220,'medium')
+      local lf,rf='medium','medium'
+      if #left>1 then lf='small';left=wrapped_text(item.f,176,lf) end
+      if #right>1 then rf='small';right=wrapped_text(item.b,220,rf) end
+      local h=64
+      R.visible[#R.visible+1]={item=item,y=y,h=h,left=left,right=right,lf=lf,rf=rf};y=y+h
+    end
+    index=index+1
+  end
+  R.next_index=index;R.has_next=false
+  for k=index+1,total do
+    if ordinary then
+      local ref=d.source=='own' and R.own_refs[k] or {s=(k-1)//d.per,l=(k-1)%d.per}
+      if ref and not deleted[entry_id(ref)] then R.has_next=true;break end
+    elseif R.matches(R.entries[k]) then R.has_next=true;break end
+  end
+end
+function kit.study.close()
+  local R=kit.study;kit.close();screen=R.return_screen or 'decks'
+  if R.ordinary then R.book_position={key=R.book_deck.key,page=R.page,starts=R.starts,generation=P.load().seq,signature=R.book_signature} end
+  R.visible=nil;R.own_refs=nil
+  if not R.ordinary then R.home() end
+end
+function kit.study.nav_button(gg,x,label,enabled)
+  if enabled then kit.button(gg,x,704,218,72,label)
+  else gg:rect(x,704,218,72,{line_width=1});local f=kit.font('small');gg:text(x+(218-kit.width(f,label))//2,730,label,{font=f}) end
+end
+function kit.study.draw(gg)
+  local R=kit.study
+  gg:text(16,18,R.ordinary and '单词本' or (R.all and '高频错词' or '错题本'),{font=kit.font('large')})
+  gg:text(16,58,R.ordinary and fit_label(R.book_deck.name,350,'small') or fit_label((not R.all and R.origin.name..' · ' or '')..R.filter,350,'small'),{font=kit.font('small')})
+  kit.letters.draw_menu(gg);gg:line(0,90,480,90)
+  for _,row in ipairs(R.visible or {}) do
+    local e,y,h=row.item,row.y,row.h
+    if e.mastered then local cy=y+h//2;gg:line(19,cy,24,cy+5);gg:line(24,cy+5,34,cy-7) end
+    text_in_box(gg,e.f,42,y+5,176,h-10,row.lf or 'medium',false,2,false,row.left)
+    text_in_box(gg,e.b,238,y+5,220,h-10,row.rf or 'medium',false,2,false,row.right)
+    gg:line(16,y+h-1,464,y+h-1)
+  end
+  if #(R.visible or {})==0 then
+    local empty=R.ordinary and '暂无单词' or (R.filter=='已掌握' and '暂无已掌握错词' or (R.filter=='未掌握' and '暂无待复习错词' or '暂无错词'))
+    gg:text(20,150,empty,{font=kit.font('medium')})
+  end
+  local label=R.page..' / '..(R.total_pages or 1)..' 页';gg:text((480-kit.width(kit.font('small'),label))//2,666,label,{font=kit.font('small')})
+  R.nav_button(gg,12,'上一页',R.page>1);R.nav_button(gg,246,'下一页',R.has_next)
+end
+function kit.study.detail(item,source,page)
+  local R=kit.study;source=source or 1;page=page or 1
+  local ref=item.refs[source];if not ref then return end
+  local c=R.card(ref.d,ref);local ls=wrapped_text(c and c.b or item.b,400,'small')
+  local pages=math.max(1,math.ceil(#ls/6));page=math.min(page,pages)
+  local source_name=(#item.refs>1 and ('来源 '..source..'/'..#item.refs..' · ') or '')..ref.d.name
+  local visible={fit_label(source_name,390,'small')}
+  if not R.ordinary then visible[#visible+1]='答错 '..(ref.errors or 0)..' 次 · '..(ref.mastered and '已掌握' or '未掌握') end
+  for j=(page-1)*6+1,math.min(page*6,#ls) do visible[#visible+1]=ls[j] end
+  local rows={}
+  if #item.refs>1 then rows[#rows+1]={{'上一来源',function()R.detail(item,source-1,1)end,source>1},
+    {'下一来源',function()R.detail(item,source+1,1)end,source<#item.refs}} end
+  if pages>1 then rows[#rows+1]={{'上一页',function()R.detail(item,source,page-1)end,page>1},
+    {'下一页 '..page..'/'..pages,function()R.detail(item,source,page+1)end,page<pages}} end
+  if not R.ordinary then rows[#rows+1]={{'单词练习',function()R.review({ref})end},
+    {'移出错题本',function()
+      kit.show({title='移出错题本？',lines={fit_label(ref.d.name,390,'small'),fit_label(item.f,390,'small'),'保留词条和学习进度。'},rows={
+        {{'取消',function()R.detail(item,source,page)end},{'移出',function()
+          kit.tx.run(function()
+            local remaining={};for _,e in ipairs(wrong_rows(ref.d)) do if entry_id(e)~=entry_id(ref) then remaining[#remaining+1]=e end end
+            write_wrong(ref.d,remaining)
+          end)
+          kit.close();screen=R.return_screen or 'decks';R.open(R.all,R.origin)
+        end}}},cancel=function()R.detail(item,source,page)end})
+    end}} end
+  rows[#rows+1]={{'返回',kit.close}}
+  kit.show({title=fit_label(item.f,390,'medium'),lines=visible,rows=rows,cancel=kit.close})
+end
+function kit.study.tap(x,y)
+  local R=kit.study
+  if y<90 and x>=368 then
+    if not R.ordinary then R.options(true) else kit.show({title='单词本',rows={{{'返回',R.close}}},cancel=kit.close}) end;return
+  end
+  if y>=704 then
+    if x>=246 and R.has_next then R.starts[R.page+1]=R.next_index;R.page=R.page+1
+    elseif x<230 and R.page>1 then R.page=R.page-1 else kit.flow.no_refresh=true;return end
+    R.list(R.ordinary);return
+  end
+  for _,row in ipairs(R.visible or {}) do if y>=row.y and y<row.y+row.h then R.detail(row.item,1,1);return end end
 end
 
 local function deck_buttons_rect(k)
@@ -3218,6 +4034,7 @@ end
 
 function on_draw(c, gg)
   if not gg then return end
+  kit.flow.frame_requested=false
   extend_budget()
   if (boot_task and boot_initial) or boot_error then
     gg:clear(0)
@@ -3239,20 +4056,25 @@ function on_draw(c, gg)
     return
   end
   local ok, e = pcall(function()
+    kit.flow.draw_view=screen=='decks' and build_library_view() or nil
     gg:clear(0)
+    if screen=='wordlist' then kit.study.draw(gg);if kit.modal() then kit.draw_modal(gg) end;return end
     if screen == 'decks' then
       gg:text(12, 12, '墨词 InkWords', { font = kit.font('large') })
       gg:text(12, 52, ((boot_task and not boot_quiet) and (management_busy and '正在保存备份与设置…' or '正在打开词书…') or ('每日新词：' .. kit.flow.daily_label())), { font = kit.font('small') })
     else
       -- the deck name, shortened to end before the Menu button
       local f, name = kit.font('medium'), deck.name
+      if kit.study.plan or kit.study.context then name=fit_label(name,W-136-kit.width(f,'（错题本）'),'medium')..'（错题本）' end
       if kit.width(f, name) > W - 136 then
         while #name > 1 and kit.width(f, name .. '~') > W - 136 do name = kit.drop_last(name) end
         name = name .. '~'
       end
       gg:text(16, 18, name, { font = f })
-      local n, r = counts()
-      gg:text(12, 52, '新词 ' .. n .. '  复习 ' .. r .. '  完成 ' .. session.done, { font = kit.font('small') })
+      local same_day=deck.header_day==today()
+      local learned=same_day and (deck.today_learned or 0) or 0
+      gg:text(12,52,'今日已学 '..learned..' · 待复习 '..(deck.header_due or 0),{font=kit.font('small')})
+      kit.study.refresh_header()
       kit.letters.draw_menu(gg)
     end
     gg:line(0, 90, W, 90)
@@ -3284,6 +4106,7 @@ function on_draw(c, gg)
     if msg then gg:text(12, BTN_Y - 30, kit.short(msg, 46), { font = kit.font('small') }) end
     if ERR then gg:text(12, H - 24, kit.short('ERR ' .. ERR, 48), { font = kit.font('small') }) end
   end)
+  kit.flow.draw_view=nil
   if not ok then ERR=tostring(e);pcall(function() gg:text(8, H - 60, kit.short('draw ERR ' .. tostring(e), 46)) end)
   else pcall(kit.tx.after_draw) end
 end
@@ -3299,7 +4122,7 @@ local function deck_menu(d)
   local on_lock = settings.lock_deck == d.key
   kit.show({ title = fit_label(d.name,390,'medium'),
              lines = { on_lock and '已开启锁屏词卡。' or '锁屏词卡每30分钟更换一个单词。' },
-             rows = { {{is_favorite(d) and '取消收藏' or '收藏词库',function() toggle_favorite(d);kit.close() end}}, { { '选择练习', function() kit.close(); choose_mode(d) end },
+             rows = { {{is_favorite(d) and '取消收藏' or '收藏词库',function() toggle_favorite(d);kit.close() end}}, {{'单词本',function()kit.study.book(d)end}}, { { '选择练习', function() kit.close(); choose_mode(d) end },
                         { '添加词卡', function() kit.close(); add_card(d) end } },
                       { { on_lock and '关闭锁屏词卡' or '开启锁屏词卡', function() kit.close(); toggle_lock(d) end },
                         { '关闭', kit.close } } },
@@ -3308,12 +4131,14 @@ end
 
 local function tap(x, y)
   if kit.tap_modal(x, y) then return end
+  if screen=='wordlist' then kit.study.tap(x,y);return end
   if screen == 'decks' then
     for k, b in ipairs(DECK_BUTTONS) do
       if in_rect(x, y, deck_buttons_rect(k)) then b[2](); return end
     end
     local d = deck_at(x, y)
     if d then
+      if d.folder=='高频错词' then kit.study.open(true);return end
       if d.folder then navigate_folder(d.folder~='home' and d.folder or nil);return end
       if d.key==settings.recent then
         random_mix=settings.recent_mode=='random';previous_mode=nil
@@ -3365,7 +4190,7 @@ function on_input(c, ev)
       if ev.phase~='up' and ev.phase~=nil then return true end
     elseif not kit.key_accepted(ev) then return true end
   else return false end
-  kit.flow.input_active=true
+  kit.flow.input_active=true;kit.flow.no_refresh=false
   ERR = nil
   local handled = true
   local ok, e = pcall(function()
@@ -3376,6 +4201,8 @@ function on_input(c, ev)
       if ev.phase ~= 'up' and ev.phase ~= nil then return end
       if kit.modal() then
         if kit.modal().cancel then kit.modal().cancel() end
+      elseif screen=='wordlist' then kit.study.close()
+      elseif kit.previous.viewing then kit.previous.restore()
       elseif screen ~= 'decks' then show_decks()
       elseif library_folder then navigate_folder(nil)
       elseif library_query~='' or favorites_only then library_query='';favorites_only=false;page=0
@@ -3408,10 +4235,14 @@ function on_input(c, ev)
       tap(x, y)
     elseif ev.type == 'key' then
       if kit.modal() then
-        return
+        kit.flow.no_refresh=true;return
+      elseif screen=='wordlist' then
+        if ev.key=='right' or ev.key=='down' then kit.study.tap(350,740)
+        elseif ev.key=='left' or ev.key=='up' then kit.study.tap(50,740) end
       elseif screen == 'study' then
         if mode~='flash' then
-          if exercise and exercise.answered and (ev.key=='right' or ev.key=='down') then finish_exercise() end
+          if exercise and exercise.presented and exercise.answered and exercise.feedback_drawn and (ev.key=='right' or ev.key=='down') then finish_exercise()
+          else kit.flow.no_refresh=true end
           return
         end
         if ev.key == 'down' or ev.key == 'right' then
@@ -3424,7 +4255,7 @@ function on_input(c, ev)
   end)
   if not ok then ERR = tostring(e) end
   if ok and screen=="decks" then request_visible_summaries() end
-  kit.refresh()
+  if not kit.flow.no_refresh then kit.refresh() end
   kit.flow.flush_refresh()
   return handled
 end
@@ -3442,6 +4273,15 @@ boot_step=function()
     if (kit.now_ms() or begin)-begin>=12 then break end
   end
   if finished then boot_initial=false;boot_stage='加载完成';kit.refresh();return end
+  local m=kit.modal();local p=m and m.progress
+  if p then
+    local key=(p.stage or '')..':'..((p.total or 0)>0 and math.floor((p.done or 0)*10/p.total) or 0)
+    local now=kit.now_ms()
+    p.ticks=(p.ticks or 0)+1
+    if key~=p.last_key and (not p.last_time or (now and (now-p.last_time>=800 or now<p.last_time)) or (not now and p.ticks>=50)) then
+      p.last_key=key;p.last_time=now or 0;p.ticks=0;kit.refresh()
+    end
+  end
   local serial=boot_serial
   local scheduled,result,why=pcall(function() return ctx:after(16,function() if serial==boot_serial then boot_step() end end) end)
   if not scheduled or result==false or (result==nil and why~=nil) then
@@ -3451,7 +4291,11 @@ boot_step=function()
 end
 start_loading=function(label,fn,quiet)
   if kit.flow.cancel_prefetch then kit.flow.cancel_prefetch() end
-  if label=='准备练习' then exercise=nil;release_memory() end
+  if label=='准备练习' then exercise=nil;release_memory()
+  elseif ctx.gc and ctx.gc.count then
+    local ok,used=pcall(function()return ctx.gc:count()end)
+    if ok and type(used)=='number' and used>800000 then release_memory() end
+  end
   boot_serial=boot_serial+1
   boot_error=nil;boot_stage=label;boot_reads=0;boot_quiet=quiet or false
   if type(ctx.after)=='function' then
@@ -3474,12 +4318,15 @@ start_loading=function(label,fn,quiet)
 end
 
 function on_load(c)
+  kit.flow.frame_requested=false;kit.flow.refresh_pending=false
   kit.flow.left=false
   storage_error=nil;boot_error=nil;ERR=nil;boot_reads=0;boot_initial=true
   extend_budget()
   math.randomseed(kit.now_ms() or 1)
   local function initialize()
     boot_stage='恢复学习记录';kit.tx.recover();boot_stage='读取设置';P.load();load_settings()
+    kit.study.stats_since=tonumber(sread('stats_since.txt'))
+    if not kit.study.stats_since then kit.study.stats_since=today();swrite('stats_since.txt',tostring(kit.study.stats_since)) end
     boot_stage='扫描词库';discover()
     boot_stage='读取学习进度';refresh_summaries()
   end
@@ -3487,14 +4334,14 @@ function on_load(c)
 end
 function on_leave()
   pcall(kit.tx.flush)
-  kit.flow.left=true;kit.flow.cancel_prefetch()
+  kit.study.header_job=nil;kit.flow.left=true;kit.flow.cancel_prefetch()
   local loading=boot_task~=nil or boot_error~=nil
   boot_task=nil;boot_serial=boot_serial+1
   if not loading and not storage_error then pcall(write_lock_cards) end
 end
 
 if rawget(_G, '__TEST') then
-  __TEST.api = { profile=function()return P.load()end, loading_visible=function() return boot_task~=nil and not boot_quiet end, loading=function() return boot_task~=nil end, boot_error=function() return boot_error end, error=function() return ERR end,
+  __TEST.api = { debug_flow=kit.flow,study=kit.study, previous=function()return kit.previous end, profile=function()return P.load()end, loading_visible=function() return boot_task~=nil and not boot_quiet end, loading=function() return boot_task~=nil end, boot_error=function() return boot_error end, error=function() return ERR end,
     exercise=function() return exercise end, current_mode=function() return mode end, mode=function(m) random_mix=m=='random'; previous_mode=nil; mode=random_mix and 'quiz' or m; exercise=nil end, choose=choose_answer, finish=finish_exercise,
     screen = function() return screen end, decks = function() return decks end, deck = function() return deck end,
     queue = function() return queue end, state = function() return st end, shown = function() return shown end,
@@ -3502,3 +4349,5 @@ if rawget(_G, '__TEST') then
     card = function() return queue[1] and card_of(queue[1]) end, today = today, own = function() return own end,
   }
 end
+
+
