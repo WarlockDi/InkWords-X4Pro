@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/publish-public-versions.yml
-      - docs/releases/release.json
+      - docs/releases/**
 permissions:
   contents: write
 concurrency:

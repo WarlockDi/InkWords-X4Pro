@@ -44,21 +44,36 @@ Cumulative changes since public 1.5.4: cancellable stage progress, source-aware 
 
 公开包提供20条自行编写的中英示例词卡，用于体验所有题型，**不是只能学习20个词**。更多词库来源、下载、CSV转换和保留原词库的导入步骤，见 **[如何获取和导入词库](docs/VOCABULARY.md)**。个人版本使用过的108本词书及抓取例句不在此公开包中，原因见 [THIRD_PARTY.md](THIRD_PARTY.md)。这不影响你本机已有的词库。
 
-### 运行预览 / Runtime previews
+### 界面预览 / Runtime previews
 
-下图来自 **1.6.3实际Lua程序在电脑测试环境中的绘图**，不是AI生成图片，也不是实机照片。模拟字体、刷新和残影可能与设备不同。示例词与测试数据不代表公开包附带完整考试词库。
+1.6.3实际Lua模拟运行截图，非AI生成、非实机照片。点击小图查看原图。模拟字体与设备可能不同。
+Actual Lua runtime captures, not AI-generated mockups or device photos. Click a thumbnail for full size; desktop fonts may differ.
 
-Actual 1.6.3 Lua runtime drawings captured in a desktop harness; not generated mockups or hardware photos. Fonts and e-paper refresh behaviour may differ.
+<table>
+<tr>
+<td align="center">目录 / Directory<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/directory.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/directory.png" width="160" alt="目录 / Directory"></a></td>
+<td align="center">设置 / Settings<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/settings.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/settings.png" width="160" alt="设置 / Settings"></a></td>
+<td align="center">单词本 / Word book<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wordbook.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wordbook.png" width="160" alt="单词本 / Word book"></a></td>
+</tr>
+<tr>
+<td align="center">拼写 / Spelling<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/spelling.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/spelling.png" width="160" alt="拼写 / Spelling"></a></td>
+<td align="center">配对 / Matching<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/matching.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/matching.png" width="160" alt="配对 / Matching"></a></td>
+<td align="center">错题本 / Mistake book<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wrong-home.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wrong-home.png" width="160" alt="错题本 / Mistake book"></a></td>
+</tr>
+</table>
 
-| 错题本进度 / Mistake progress | 高频错词进度 / Aggregate progress | 累计总结 / Summary |
-| --- | --- | --- |
-| <img src="docs/screenshots/wrong-progress.png" width="220" alt="Wrong-word progress"> | <img src="docs/screenshots/frequent-progress.png" width="220" alt="Frequent wrong words progress"> | <img src="docs/screenshots/summary-progress.png" width="220" alt="Cumulative summary progress"> |
+<details>
+<summary>查看三个等待进度页面 / Show loading progress screens</summary>
 
-| 单词本 / Word book | 拼写 / Spelling | 配对 / Matching |
-| --- | --- | --- |
-| <img src="docs/screenshots/wordbook.png" width="220" alt="Word book"> | <img src="docs/screenshots/spelling.png" width="220" alt="Spelling"> | <img src="docs/screenshots/matching.png" width="220" alt="Matching"> |
+<table>
+<tr>
+<td align="center">错题本进度<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wrong-progress.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/wrong-progress.png" width="150" alt="错题本进度"></a></td>
+<td align="center">高频错词进度<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/frequent-progress.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/frequent-progress.png" width="150" alt="高频错词进度"></a></td>
+<td align="center">累计总结进度<br><a href="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/summary-progress.png"><img src="https://raw.githubusercontent.com/WarlockDi/InkWords-X4Pro/v1.6.3/docs/screenshots/summary-progress.png" width="150" alt="累计总结进度"></a></td>
+</tr>
+</table>
 
-[完整新版截图 / More current screenshots](docs/SCREENSHOTS.md)
+</details>
 
 ### 验证范围
 
